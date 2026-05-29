@@ -78,6 +78,17 @@ struct WorkspaceRepository {
         try database.transaction { transaction in
             try transaction.execute("UPDATE sessions SET workspace_id = NULL WHERE workspace_id = ?", values: [.int(id)])
             try transaction.execute("DELETE FROM agent_workspaces WHERE workspace_id = ?", values: [.int(id)])
+            try transaction.execute("""
+                DELETE FROM agent_orchestration_members
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM agent_workspaces lead_ws
+                    JOIN agent_workspaces child_ws
+                        ON child_ws.workspace_id = lead_ws.workspace_id
+                    WHERE lead_ws.agent_id = agent_orchestration_members.lead_agent_id
+                        AND child_ws.agent_id = agent_orchestration_members.child_agent_id
+                )
+                """)
             try transaction.execute("DELETE FROM workspaces WHERE id = ?", values: [.int(id)])
         }
     }

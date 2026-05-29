@@ -3,6 +3,14 @@ import Foundation
 struct ChangeSetRepository {
     let database: SQLiteDatabase
 
+    func findAll() throws -> [ChangeSet] {
+        try database.query("""
+            SELECT id, session_id, workspace_id, status, created_at
+            FROM change_sets
+            ORDER BY created_at DESC, id DESC
+            """, map: map)
+    }
+
     func findBySessionID(_ sessionID: Int64) throws -> [ChangeSet] {
         try database.query("""
             SELECT id, session_id, workspace_id, status, created_at
@@ -53,9 +61,18 @@ struct ChangeSetRepository {
 struct FileChangeRepository {
     let database: SQLiteDatabase
 
+    func findAll() throws -> [FileChange] {
+        try database.query("""
+            SELECT fc.id, fc.change_set_id, fc.file_path, fc.old_content, fc.base_content_exists, fc.new_content, fc.diff_text, fc.status
+            FROM file_changes fc
+            JOIN change_sets cs ON cs.id = fc.change_set_id
+            ORDER BY cs.created_at DESC, fc.id DESC
+            """, map: map)
+    }
+
     func findBySessionID(_ sessionID: Int64) throws -> [FileChange] {
         try database.query("""
-            SELECT fc.id, fc.change_set_id, fc.file_path, fc.old_content, fc.new_content, fc.diff_text, fc.status
+            SELECT fc.id, fc.change_set_id, fc.file_path, fc.old_content, fc.base_content_exists, fc.new_content, fc.diff_text, fc.status
             FROM file_changes fc
             JOIN change_sets cs ON cs.id = fc.change_set_id
             WHERE cs.session_id = ?
@@ -65,7 +82,7 @@ struct FileChangeRepository {
 
     func findByChangeSetID(_ changeSetID: Int64) throws -> [FileChange] {
         try database.query("""
-            SELECT id, change_set_id, file_path, old_content, new_content, diff_text, status
+            SELECT id, change_set_id, file_path, old_content, base_content_exists, new_content, diff_text, status
             FROM file_changes
             WHERE change_set_id = ?
             ORDER BY id ASC
@@ -74,7 +91,7 @@ struct FileChangeRepository {
 
     func find(id: Int64) throws -> FileChange {
         let rows = try database.query("""
-            SELECT id, change_set_id, file_path, old_content, new_content, diff_text, status
+            SELECT id, change_set_id, file_path, old_content, base_content_exists, new_content, diff_text, status
             FROM file_changes
             WHERE id = ?
             """, values: [.int(id)], map: map)
@@ -86,17 +103,19 @@ struct FileChangeRepository {
         changeSetID: Int64,
         filePath: String,
         oldContent: String,
+        baseContentExists: Bool,
         newContent: String,
         diffText: String,
         status: String = "PENDING"
     ) throws -> FileChange {
         let id = try database.insert("""
-            INSERT INTO file_changes (change_set_id, file_path, old_content, new_content, diff_text, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO file_changes (change_set_id, file_path, old_content, base_content_exists, new_content, diff_text, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """, values: [
                 .int(changeSetID),
                 .text(filePath),
                 .text(oldContent),
+                .bool(baseContentExists),
                 .text(newContent),
                 .text(diffText),
                 .text(status.isEmpty ? "PENDING" : status)
@@ -114,9 +133,10 @@ struct FileChangeRepository {
             changeSetID: row.int64(1),
             filePath: row.text(2),
             oldContent: row.text(3),
-            newContent: row.text(4),
-            diffText: row.text(5),
-            status: row.text(6)
+            baseContentExists: row.bool(4),
+            newContent: row.text(5),
+            diffText: row.text(6),
+            status: row.text(7)
         )
     }
 }

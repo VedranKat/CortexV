@@ -2,19 +2,26 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var appModel: AppModel
+    @AppStorage("sidebar.isAppMenuExpanded") private var isAppMenuExpanded = true
+    @AppStorage("sidebar.showsSubAgentSessions") private var showsSubAgentSessions = true
     @State private var collapsedWorkspaceIDs: Set<Int64> = []
+    @State private var collapsedSessionIDs: Set<Int64> = []
 
     private var assignedSessionGroups: [WorkspaceSessionGroup] {
         appModel.workspaces.compactMap { workspace in
-            let sessions = appModel.sessions.filter { $0.workspaceID == workspace.id }
+            let sessions = topLevelSessions.filter { $0.workspaceID == workspace.id }
             guard !sessions.isEmpty else { return nil }
             return WorkspaceSessionGroup(workspace: workspace, sessions: sessions)
         }
     }
 
+    private var topLevelSessions: [Session] {
+        appModel.sessions.filter { !$0.attachedChildRun }
+    }
+
     private var unassignedSessions: [Session] {
         let knownWorkspaceIDs = Set(appModel.workspaces.map(\.id))
-        return appModel.sessions.filter { session in
+        return topLevelSessions.filter { session in
             guard let workspaceID = session.workspaceID else { return true }
             return !knownWorkspaceIDs.contains(workspaceID)
         }
@@ -22,16 +29,30 @@ struct SidebarView: View {
 
     var body: some View {
         List {
-            Section("Cortex V") {
-                ForEach(NavigationSection.allCases) { section in
-                    SidebarNavigationButton(
-                        section: section,
-                        count: count(for: section),
-                        pendingReviewCount: section == .sessions ? appModel.snapshot.pendingChangesCount : 0,
-                        isSelected: isSectionSelected(section)
-                    ) {
-                        select(section)
+            Section {
+                SidebarAppMenuHeader(isExpanded: isAppMenuExpanded) {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isAppMenuExpanded.toggle()
                     }
+                }
+
+                if isAppMenuExpanded {
+                    ForEach(NavigationSection.allCases) { section in
+                        SidebarNavigationButton(
+                            section: section,
+                            count: count(for: section),
+                            pendingReviewCount: 0,
+                            isSelected: isSectionSelected(section)
+                        ) {
+                            select(section)
+                        }
+                    }
+
+                    Toggle(isOn: $showsSubAgentSessions) {
+                        Label("Sub-Agent Sessions", systemImage: "arrow.triangle.branch")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -39,13 +60,15 @@ struct SidebarView: View {
                 Section {
                     DisclosureGroup(isExpanded: expandedBinding(for: group.workspace.id)) {
                         ForEach(group.sessions) { session in
-                            SidebarSessionButton(
+                            SidebarSessionTree(
                                 session: session,
-                                isSelected: isSessionSelected(session),
-                                agentName: appModel.agentName(for: session.agentID)
-                            ) {
-                                selectSession(session)
-                            }
+                                childRuns: childRuns(for: session),
+                                showsChildRuns: showsSubAgentSessions,
+                                isExpanded: sessionExpandedBinding(for: session.id),
+                                isSelected: isSessionSelected,
+                                agentName: appModel.agentName(for:),
+                                onSelect: selectSession
+                            )
                         }
                     } label: {
                         WorkspaceGroupLabel(
@@ -62,13 +85,15 @@ struct SidebarView: View {
             if !unassignedSessions.isEmpty {
                 Section("Chat Sessions") {
                     ForEach(unassignedSessions) { session in
-                        SidebarSessionButton(
+                        SidebarSessionTree(
                             session: session,
-                            isSelected: isSessionSelected(session),
-                            agentName: appModel.agentName(for: session.agentID)
-                        ) {
-                            selectSession(session)
-                        }
+                            childRuns: childRuns(for: session),
+                            showsChildRuns: showsSubAgentSessions,
+                            isExpanded: sessionExpandedBinding(for: session.id),
+                            isSelected: isSessionSelected,
+                            agentName: appModel.agentName(for:),
+                            onSelect: selectSession
+                        )
                     }
                 }
             }
@@ -119,7 +144,7 @@ struct SidebarView: View {
         switch section {
         case .sessions:
             appModel.selectedSection == .sessions && appModel.selectedSessionID == nil
-        case .agents, .workspaces, .releaseNotes:
+        case .changes, .agents, .workspaces, .releaseNotes:
             appModel.selectedSection == section
         }
     }
@@ -132,6 +157,8 @@ struct SidebarView: View {
         switch section {
         case .sessions:
             appModel.snapshot.sessionsCount
+        case .changes:
+            appModel.snapshot.pendingChangesCount
         case .agents:
             appModel.snapshot.agentsCount
         case .workspaces:
@@ -152,6 +179,22 @@ struct SidebarView: View {
             }
         }
     }
+
+    private func sessionExpandedBinding(for sessionID: Int64) -> Binding<Bool> {
+        Binding {
+            !collapsedSessionIDs.contains(sessionID)
+        } set: { isExpanded in
+            if isExpanded {
+                collapsedSessionIDs.remove(sessionID)
+            } else {
+                collapsedSessionIDs.insert(sessionID)
+            }
+        }
+    }
+
+    private func childRuns(for session: Session) -> [Session] {
+        appModel.sessions.filter { $0.parentSessionID == session.id && $0.attachedChildRun }
+    }
 }
 
 private struct WorkspaceSessionGroup: Identifiable {
@@ -159,6 +202,33 @@ private struct WorkspaceSessionGroup: Identifiable {
     let sessions: [Session]
 
     var id: Int64 { workspace.id }
+}
+
+private struct SidebarAppMenuHeader: View {
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+
+                Text("Cortex V")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 8)
+            }
+            .contentShape(Rectangle())
+            .padding(.top, 4)
+            .padding(.bottom, 2)
+        }
+        .buttonStyle(.plain)
+        .help(isExpanded ? "Collapse Cortex V Menu" : "Expand Cortex V Menu")
+    }
 }
 
 private struct SidebarNavigationButton: View {
@@ -239,10 +309,57 @@ private struct WorkspaceGroupLabel: View {
     }
 }
 
+private struct SidebarSessionTree: View {
+    let session: Session
+    let childRuns: [Session]
+    let showsChildRuns: Bool
+    @Binding var isExpanded: Bool
+    let isSelected: (Session) -> Bool
+    let agentName: (Int64) -> String
+    let onSelect: (Session) -> Void
+
+    var body: some View {
+        if showsChildRuns && !childRuns.isEmpty {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                ForEach(childRuns) { childRun in
+                    SidebarSessionButton(
+                        session: childRun,
+                        isSelected: isSelected(childRun),
+                        agentName: agentName(childRun.agentID),
+                        depth: 1
+                    ) {
+                        onSelect(childRun)
+                    }
+                }
+            } label: {
+                SidebarSessionButton(
+                    session: session,
+                    isSelected: isSelected(session),
+                    agentName: agentName(session.agentID),
+                    childCount: childRuns.count
+                ) {
+                    onSelect(session)
+                }
+            }
+        } else {
+            SidebarSessionButton(
+                session: session,
+                isSelected: isSelected(session),
+                agentName: agentName(session.agentID),
+                childCount: childRuns.count
+            ) {
+                onSelect(session)
+            }
+        }
+    }
+}
+
 private struct SidebarSessionButton: View {
     let session: Session
     let isSelected: Bool
     let agentName: String
+    var depth = 0
+    var childCount = 0
     let action: () -> Void
 
     var body: some View {
@@ -254,6 +371,15 @@ private struct SidebarSessionButton: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 6)
+                    if childCount > 0 {
+                        Text(childCount.formatted())
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    if session.hasParentProvenance {
+                        SidebarStatusBadge(text: session.sidebarStatusText, color: session.sidebarStatusColor)
+                    }
                     if isSelected {
                         Image(systemName: "checkmark")
                             .font(.caption.weight(.semibold))
@@ -265,11 +391,78 @@ private struct SidebarSessionButton: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                if session.hasParentProvenance {
+                    Label(childRunText, systemImage: session.orchestrationRole?.systemImage ?? "arrow.triangle.branch")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             .padding(.vertical, 4)
+            .padding(.leading, CGFloat(depth) * 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+    }
+
+    private var childRunText: String {
+        let role = session.orchestrationRole?.title ?? "Sub-Agent Session"
+        guard let parentSessionID = session.parentSessionID else { return role }
+        if session.detachedChildRun {
+            return "Detached \(role) from #\(parentSessionID)"
+        }
+        return "\(role) from #\(parentSessionID)"
+    }
+}
+
+private struct SidebarStatusBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text(text)
+                .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(Color(nsColor: .quaternaryLabelColor).opacity(0.18))
+        .clipShape(Capsule())
+    }
+}
+
+private extension Session {
+    var sidebarStatusText: String {
+        if detachedChildRun {
+            return "Detached"
+        }
+        switch status {
+        case .active:
+            return "Running"
+        case .completed:
+            return "Done"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    var sidebarStatusColor: Color {
+        if detachedChildRun {
+            return .secondary
+        }
+        switch status {
+        case .active:
+            return .blue
+        case .completed:
+            return .green
+        case .failed:
+            return .orange
+        }
     }
 }

@@ -4,5 +4,7 @@
 .build-app/
 .swiftpm/
 dist/
+cortexv-diagnostics/
 .codex/
+.local/
 AGENTS.md

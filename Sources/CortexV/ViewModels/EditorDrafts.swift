@@ -10,7 +10,9 @@ struct AgentDraft: Identifiable, Equatable {
     var systemPrompt: String
     var temperature: Double
     var status: AgentStatus
+    var kind: AgentKind
     var workspaceIDs: Set<Int64>
+    var orchestrationMembers: [OrchestrationMemberDraft]
 
     var identity: String { id.map(String.init) ?? "new" }
 
@@ -22,10 +24,12 @@ struct AgentDraft: Identifiable, Equatable {
             baseURL: "",
             apiKey: "",
             model: "",
-            systemPrompt: "You are a helpful coding agent.",
+            systemPrompt: AgentPromptDefaults.standard,
             temperature: 0.2,
             status: .enabled,
-            workspaceIDs: []
+            kind: .standard,
+            workspaceIDs: [],
+            orchestrationMembers: []
         )
     }
 
@@ -39,7 +43,9 @@ struct AgentDraft: Identifiable, Equatable {
         systemPrompt: String,
         temperature: Double,
         status: AgentStatus,
-        workspaceIDs: Set<Int64>
+        kind: AgentKind,
+        workspaceIDs: Set<Int64>,
+        orchestrationMembers: [OrchestrationMemberDraft]
     ) {
         self.id = id
         self.name = name
@@ -50,10 +56,12 @@ struct AgentDraft: Identifiable, Equatable {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
         self.status = status
+        self.kind = kind
         self.workspaceIDs = workspaceIDs
+        self.orchestrationMembers = orchestrationMembers
     }
 
-    init(agent: Agent, workspaceIDs: [Int64]) {
+    init(agent: Agent, workspaceIDs: [Int64], orchestrationMembers: [OrchestrationMember]) {
         self.init(
             id: agent.id,
             name: agent.name,
@@ -64,7 +72,35 @@ struct AgentDraft: Identifiable, Equatable {
             systemPrompt: agent.systemPrompt,
             temperature: agent.temperature,
             status: agent.status,
-            workspaceIDs: Set(workspaceIDs)
+            kind: agent.kind,
+            workspaceIDs: Set(workspaceIDs),
+            orchestrationMembers: orchestrationMembers.map(OrchestrationMemberDraft.init(member:))
+        )
+    }
+}
+
+struct OrchestrationMemberDraft: Identifiable, Equatable {
+    var id = UUID()
+    var childAgentID: Int64
+    var role: OrchestrationRole
+    var handoffPrompt: String
+
+    var effectivePrompt: String {
+        let trimmed = handoffPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? role.defaultHandoffPrompt : trimmed
+    }
+
+    init(childAgentID: Int64, role: OrchestrationRole = .scout, handoffPrompt: String = "") {
+        self.childAgentID = childAgentID
+        self.role = role
+        self.handoffPrompt = handoffPrompt
+    }
+
+    init(member: OrchestrationMember) {
+        self.init(
+            childAgentID: member.childAgentID,
+            role: member.role,
+            handoffPrompt: member.handoffPrompt
         )
     }
 }

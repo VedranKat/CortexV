@@ -2,6 +2,7 @@ import Foundation
 
 enum NavigationSection: String, CaseIterable, Identifiable {
     case sessions
+    case changes
     case agents
     case workspaces
     case releaseNotes
@@ -11,6 +12,7 @@ enum NavigationSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .sessions: "Start Session"
+        case .changes: "Changes"
         case .agents: "Agents"
         case .workspaces: "Workspaces"
         case .releaseNotes: "Release Notes"
@@ -20,6 +22,7 @@ enum NavigationSection: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .sessions: "plus.bubble"
+        case .changes: "doc.text.magnifyingglass"
         case .agents: "person.crop.circle.badge.checkmark"
         case .workspaces: "folder"
         case .releaseNotes: "doc.text"
@@ -28,7 +31,7 @@ enum NavigationSection: String, CaseIterable, Identifiable {
 
     var showsCount: Bool {
         switch self {
-        case .sessions, .agents, .workspaces:
+        case .sessions, .changes, .agents, .workspaces:
             true
         case .releaseNotes:
             false

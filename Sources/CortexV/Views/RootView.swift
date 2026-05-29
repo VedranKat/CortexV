@@ -29,6 +29,8 @@ struct RootView: View {
         switch appModel.selectedSection ?? .sessions {
         case .sessions:
             SessionsView()
+        case .changes:
+            ChangesView()
         case .agents:
             AgentsView()
         case .workspaces:

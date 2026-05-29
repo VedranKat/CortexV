@@ -74,6 +74,17 @@ struct FileSystemService {
         try content.write(to: file, atomically: true, encoding: .utf8)
     }
 
+    func restoreFile(workspace: Workspace, relativePath: String, content: String?) throws {
+        if let content {
+            try writeFile(workspace: workspace, relativePath: relativePath, content: content)
+            return
+        }
+
+        let file = try guardService.resolveWritablePath(workspace: workspace, relativePath: relativePath)
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        try FileManager.default.removeItem(at: file)
+    }
+
     func searchInFiles(workspace: Workspace, query: String, relativeDirectory: String?) throws -> String {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedQuery.isEmpty else { throw ToolExecutionError.message("Search text is required.") }

@@ -15,9 +15,9 @@ struct ToolExecutionService {
     let fileSystemService: FileSystemService
     let changeReviewService: ChangeReviewService
 
-    func availableToolsForSession(_ sessionID: Int64) throws -> [ToolDefinition] {
-        let readable = try readableWorkspacesForSession(sessionID)
-        let writable = try writableWorkspacesForSession(sessionID)
+    func availableToolsForSession(_ sessionID: Int64, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> [ToolDefinition] {
+        let readable = try readableWorkspacesForSession(sessionID, limitingToWorkspaceIDs: allowedWorkspaceIDs)
+        let writable = try writableWorkspacesForSession(sessionID, limitingToWorkspaceIDs: allowedWorkspaceIDs)
         var tools: [ToolDefinition] = []
 
         if !readable.isEmpty {
@@ -65,19 +65,19 @@ struct ToolExecutionService {
         return tools
     }
 
-    func executeToolCall(sessionID: Int64, toolCall: ToolCallRequest) -> String {
+    func executeToolCall(sessionID: Int64, toolCall: ToolCallRequest, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) -> String {
         do {
             let args = try parseArguments(toolCall.argumentsJSON)
             let workspaceID = optionalInt(args["workspaceId"])
             switch toolCall.name {
             case "list_files":
-                return try listFiles(sessionID: sessionID, workspaceID: workspaceID, path: optionalText(args["path"]))
+                return try listFiles(sessionID: sessionID, workspaceID: workspaceID, path: optionalText(args["path"]), limitingToWorkspaceIDs: allowedWorkspaceIDs)
             case "read_file":
-                return try readFile(sessionID: sessionID, workspaceID: workspaceID, path: requiredText(args["path"], name: "path"))
+                return try readFile(sessionID: sessionID, workspaceID: workspaceID, path: requiredText(args["path"], name: "path"), limitingToWorkspaceIDs: allowedWorkspaceIDs)
             case "search_in_files":
-                return try searchInFiles(sessionID: sessionID, workspaceID: workspaceID, query: requiredText(args["query"], name: "query"), path: optionalText(args["path"]))
+                return try searchInFiles(sessionID: sessionID, workspaceID: workspaceID, query: requiredText(args["query"], name: "query"), path: optionalText(args["path"]), limitingToWorkspaceIDs: allowedWorkspaceIDs)
             case "propose_file_write":
-                return try proposeFileWrite(sessionID: sessionID, workspaceID: workspaceID, path: requiredText(args["path"], name: "path"), newContent: requiredRawText(args["newContent"], name: "newContent"))
+                return try proposeFileWrite(sessionID: sessionID, workspaceID: workspaceID, path: requiredText(args["path"], name: "path"), newContent: requiredRawText(args["newContent"], name: "newContent"), limitingToWorkspaceIDs: allowedWorkspaceIDs)
             default:
                 return "Tool error: Unknown tool '\(toolCall.name)'."
             }
@@ -86,32 +86,39 @@ struct ToolExecutionService {
         }
     }
 
-    func listFiles(sessionID: Int64, workspaceID: Int64?, path: String?) throws -> String {
-        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false)
+    func listFiles(sessionID: Int64, workspaceID: Int64?, path: String?, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
         return try fileSystemService.listFiles(workspace: workspace, relativeDirectory: path)
     }
 
-    func readFile(sessionID: Int64, workspaceID: Int64?, path: String) throws -> String {
-        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false)
+    func readFile(sessionID: Int64, workspaceID: Int64?, path: String, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
         return try fileSystemService.readFile(workspace: workspace, relativePath: path)
     }
 
-    func searchInFiles(sessionID: Int64, workspaceID: Int64?, query: String, path: String?) throws -> String {
-        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false)
+    func searchInFiles(sessionID: Int64, workspaceID: Int64?, query: String, path: String?, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
         return try fileSystemService.searchInFiles(workspace: workspace, query: query, relativeDirectory: path)
     }
 
-    func proposeFileWrite(sessionID: Int64, workspaceID: Int64?, path: String, newContent: String) throws -> String {
-        let fileChange = try changeReviewService.proposeFileWrite(sessionID: sessionID, workspaceID: workspaceID, relativePath: path, newContent: newContent)
+    func proposeFileWrite(sessionID: Int64, workspaceID: Int64?, path: String, newContent: String, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: true, limitingToWorkspaceIDs: allowedWorkspaceIDs)
+        let fileChange = try changeReviewService.proposeFileWrite(sessionID: sessionID, workspaceID: workspace.id, relativePath: path, newContent: newContent)
         return "Created change proposal #\(fileChange.id) for '\(fileChange.filePath)'. Review it in the Changes view before anything is written to disk."
     }
 
-    private func readableWorkspacesForSession(_ sessionID: Int64) throws -> [Workspace] {
-        try boundWorkspacesForSession(sessionID).filter(\.allowRead).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    private func readableWorkspacesForSession(_ sessionID: Int64, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> [Workspace] {
+        try scopedWorkspacesForSession(sessionID, limitingToWorkspaceIDs: allowedWorkspaceIDs).filter(\.allowRead).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private func writableWorkspacesForSession(_ sessionID: Int64) throws -> [Workspace] {
-        try boundWorkspacesForSession(sessionID).filter(\.allowWrite).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    private func writableWorkspacesForSession(_ sessionID: Int64, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> [Workspace] {
+        try scopedWorkspacesForSession(sessionID, limitingToWorkspaceIDs: allowedWorkspaceIDs).filter(\.allowWrite).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func scopedWorkspacesForSession(_ sessionID: Int64, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>?) throws -> [Workspace] {
+        let workspaces = try boundWorkspacesForSession(sessionID)
+        guard let allowedWorkspaceIDs else { return workspaces }
+        return workspaces.filter { allowedWorkspaceIDs.contains($0.id) }
     }
 
     private func boundWorkspacesForSession(_ sessionID: Int64) throws -> [Workspace] {
@@ -120,8 +127,8 @@ struct ToolExecutionService {
         return try ids.map { try persistence.workspaces.find(id: $0) }
     }
 
-    private func resolveWorkspace(sessionID: Int64, requestedWorkspaceID: Int64?, requireWrite: Bool) throws -> Workspace {
-        let workspaces = try requireWrite ? writableWorkspacesForSession(sessionID) : readableWorkspacesForSession(sessionID)
+    private func resolveWorkspace(sessionID: Int64, requestedWorkspaceID: Int64?, requireWrite: Bool, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> Workspace {
+        let workspaces = try requireWrite ? writableWorkspacesForSession(sessionID, limitingToWorkspaceIDs: allowedWorkspaceIDs) : readableWorkspacesForSession(sessionID, limitingToWorkspaceIDs: allowedWorkspaceIDs)
         guard !workspaces.isEmpty else {
             throw ToolExecutionError.message("No \(requireWrite ? "writable" : "readable") workspaces are bound to this session's agent.")
         }

@@ -57,10 +57,17 @@ struct WorkspaceGuard {
             return true
         }
         let relative = relativePath(root: root, candidate: candidate)
+        guard !isGeneratedDiagnosticsPath(relative) else {
+            return false
+        }
         let includes = patterns(workspace.includePatterns)
         let excludes = patterns(workspace.excludePatterns)
         let included = includes.isEmpty || includes.contains { globMatches(pattern: $0, relative: relative) }
         return included && !excludes.contains { globMatches(pattern: $0, relative: relative) }
+    }
+
+    private func isGeneratedDiagnosticsPath(_ relative: String) -> Bool {
+        relative == "cortexv-diagnostics" || relative.hasPrefix("cortexv-diagnostics/")
     }
 
     private func relativePath(root: URL, candidate: URL) -> String {

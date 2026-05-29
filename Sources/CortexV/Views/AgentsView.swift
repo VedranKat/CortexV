@@ -22,6 +22,10 @@ struct AgentsView: View {
             AgentDetailView(
                 agent: selectedAgent,
                 boundWorkspaces: selectedBoundWorkspaces,
+                allAgents: appModel.agents,
+                allWorkspaces: appModel.workspaces,
+                agentWorkspaceIDs: appModel.agentWorkspaceIDs,
+                orchestrationMembers: appModel.orchestrationMembers(for: selectedAgent?.id),
                 feedback: feedback,
                 onNew: { editorDraft = appModel.agentDraft() },
                 onCreateWorkspace: { appModel.selectedSection = .workspaces }
@@ -58,7 +62,9 @@ struct AgentsView: View {
         .sheet(item: $editorDraft) { draft in
             AgentEditorSheet(
                 draft: draft,
+                agents: appModel.agents,
                 workspaces: appModel.workspaces,
+                agentWorkspaceIDs: appModel.agentWorkspaceIDs,
                 onCancel: { editorDraft = nil },
                 onSave: { draft in
                     let saved = appModel.saveAgent(draft)
@@ -88,7 +94,7 @@ struct AgentsView: View {
                 }
 
                 if appModel.workspaces.isEmpty {
-                    ActionFeedbackView(feedback: ActionFeedback(kind: .info, message: "Create a workspace first so the agent has somewhere to work."))
+                    ActionFeedbackView(feedback: ActionFeedback(kind: .info, message: "Workspaces are optional. Create a chat-only agent now, then bind a workspace later for file tools."))
                 }
             }
             .padding(12)
@@ -106,7 +112,7 @@ struct AgentsView: View {
                     ContentUnavailableView(
                         "No Agents",
                         systemImage: "person.crop.circle.badge.plus",
-                        description: Text("Create an agent after adding a workspace.")
+                        description: Text("Create a chat-only agent, or bind one to a workspace for file tools.")
                     )
                 }
             }
@@ -130,10 +136,16 @@ private struct AgentRow: View {
                     .foregroundStyle(agent.enabled ? .green : .secondary)
             }
 
-            Text(agent.model.isEmpty ? "Model not set" : agent.model)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(agent.kind.title)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(agent.orchestrator ? Color.accentColor : Color.secondary)
+
+                Text(agent.model.isEmpty ? "Model not set" : agent.model)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             if !agent.baseURL.isEmpty {
                 Text(agent.baseURL)
@@ -149,6 +161,10 @@ private struct AgentRow: View {
 private struct AgentDetailView: View {
     let agent: Agent?
     let boundWorkspaces: [Workspace]
+    let allAgents: [Agent]
+    let allWorkspaces: [Workspace]
+    let agentWorkspaceIDs: [Int64: Set<Int64>]
+    let orchestrationMembers: [OrchestrationMember]
     let feedback: ActionFeedback?
     let onNew: () -> Void
     let onCreateWorkspace: () -> Void
@@ -164,6 +180,7 @@ private struct AgentDetailView: View {
                     }
 
                     AgentDetailSection("Provider") {
+                        DetailRow(title: "Kind", value: agent.kind.title)
                         DetailRow(title: "Base URL", value: agent.baseURL.isEmpty ? "Not set" : agent.baseURL)
                         DetailRow(title: "Model", value: agent.model.isEmpty ? "Not set" : agent.model)
                         DetailRow(title: "Status", value: agent.status.rawValue.capitalized)
@@ -172,7 +189,7 @@ private struct AgentDetailView: View {
 
                     AgentDetailSection("Bound Workspaces") {
                         if boundWorkspaces.isEmpty {
-                            Text("No workspaces bound.")
+                            Text("Chat only. Bind a workspace later to enable file tools.")
                                 .foregroundStyle(.secondary)
                         } else {
                             ForEach(boundWorkspaces) { workspace in
@@ -198,6 +215,16 @@ private struct AgentDetailView: View {
                         Text(agent.systemPrompt)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if agent.orchestrator {
+                        OrchestrationDetailSection(
+                            lead: agent,
+                            members: orchestrationMembers,
+                            agents: allAgents,
+                            workspaces: allWorkspaces,
+                            agentWorkspaceIDs: agentWorkspaceIDs
+                        )
                     }
                 }
                 .padding(24)
@@ -289,20 +316,26 @@ private struct DetailRow: View {
 private struct AgentEditorSheet: View {
     @State private var draft: AgentDraft
     @State private var saveFeedback: ActionFeedback?
+    let agents: [Agent]
     let workspaces: [Workspace]
+    let agentWorkspaceIDs: [Int64: Set<Int64>]
     let onCancel: () -> Void
     let onSave: (AgentDraft) -> ActionFeedback
     let onSaved: () -> Void
 
     init(
         draft: AgentDraft,
+        agents: [Agent],
         workspaces: [Workspace],
+        agentWorkspaceIDs: [Int64: Set<Int64>],
         onCancel: @escaping () -> Void,
         onSave: @escaping (AgentDraft) -> ActionFeedback,
         onSaved: @escaping () -> Void
     ) {
         _draft = State(initialValue: draft)
+        self.agents = agents
         self.workspaces = workspaces
+        self.agentWorkspaceIDs = agentWorkspaceIDs
         self.onCancel = onCancel
         self.onSave = onSave
         self.onSaved = onSaved
@@ -331,6 +364,13 @@ private struct AgentEditorSheet: View {
                         }
                     }
                     .pickerStyle(.segmented)
+
+                    Picker("Kind", selection: $draft.kind) {
+                        ForEach(AgentKind.allCases) { kind in
+                            Text(kind.title).tag(kind)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
 
                 Section("Provider") {
@@ -353,7 +393,7 @@ private struct AgentEditorSheet: View {
 
                 Section("Workspace Binding") {
                     if workspaces.isEmpty {
-                        ActionFeedbackView(feedback: ActionFeedback(kind: .info, message: "Create a workspace before binding this agent."))
+                        ActionFeedbackView(feedback: ActionFeedback(kind: .info, message: "No workspaces yet. Save this agent as chat-only, then bind a workspace later for file tools."))
                     } else {
                         ForEach(workspaces) { workspace in
                             Toggle(isOn: binding(for: workspace.id)) {
@@ -373,8 +413,20 @@ private struct AgentEditorSheet: View {
                     TextField("System Prompt", text: $draft.systemPrompt, axis: .vertical)
                         .lineLimit(5...10)
                 }
+
+                if draft.kind == .orchestrator {
+                    OrchestrationEditorSection(
+                        draft: $draft,
+                        agents: agents,
+                        workspaces: workspaces,
+                        agentWorkspaceIDs: agentWorkspaceIDs
+                    )
+                }
             }
             .formStyle(.grouped)
+            .onChange(of: draft.kind) { _, kind in
+                applyDefaultPrompt(for: kind)
+            }
 
             Divider()
 
@@ -413,5 +465,11 @@ private struct AgentEditorSheet: View {
                 draft.workspaceIDs.remove(workspaceID)
             }
         }
+    }
+
+    private func applyDefaultPrompt(for kind: AgentKind) {
+        let trimmed = draft.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == AgentPromptDefaults.standard else { return }
+        draft.systemPrompt = AgentPromptDefaults.systemPrompt(for: kind)
     }
 }
