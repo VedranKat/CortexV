@@ -80,7 +80,7 @@ enum OrchestrationRole: String, Codable, CaseIterable, Identifiable {
     var defaultHandoffPrompt: String {
         switch self {
         case .scout:
-            "Read only. Map the relevant files, APIs, and risks. Return concise findings with file paths and confidence levels."
+            "Read only. Map the smallest relevant part of the repo. Start with glob/path discovery, then grep exact symbols or text, then read only narrow line ranges once targets are known. Return concise findings with file paths, line refs, confidence levels, risks, and the next likely read or edit target."
         case .logReader:
             "Read only. Inspect logs, build output, or runtime traces. Return failures, likely causes, and the exact evidence."
         case .worker:

@@ -31,8 +31,38 @@ struct ToolExecutionService {
                 ])
             ))
             tools.append(ToolDefinition(
+                name: "glob_files",
+                description: "Find readable files by glob pattern or path substring using a fresh filesystem scan. Use this to discover candidate files before reading. \(help)",
+                inputSchema: schema(required: ["pattern"], properties: [
+                    "workspaceId": ["type": "integer", "description": "Optional workspace id when multiple workspaces are available."],
+                    "pattern": ["type": "string", "description": "Glob pattern such as **/*.swift, *Service*, or a path substring such as ChatService."],
+                    "path": ["type": "string", "description": "Optional directory path inside the workspace. Leave empty for the workspace root."]
+                ])
+            ))
+            tools.append(ToolDefinition(
+                name: "grep_files",
+                description: "Search current readable UTF-8 files for a regex pattern and return file paths with line numbers. Use this for exact symbols, strings, and narrow code discovery. \(help)",
+                inputSchema: schema(required: ["pattern"], properties: [
+                    "workspaceId": ["type": "integer", "description": "Optional workspace id when multiple workspaces are available."],
+                    "pattern": ["type": "string", "description": "Regular expression to search for, for example delegate_to_child_agent or struct\\s+Agent."],
+                    "path": ["type": "string", "description": "Optional file or directory path inside the workspace. Leave empty for the workspace root."],
+                    "include": ["type": "string", "description": "Optional file glob to narrow searched files, for example **/*.swift."],
+                    "caseSensitive": ["type": "boolean", "description": "Optional. Defaults to false."]
+                ])
+            ))
+            tools.append(ToolDefinition(
+                name: "read_file_range",
+                description: "Read a fresh line range from one UTF-8 text file. Prefer this over read_file when grep_files or prior context identified relevant lines. \(help)",
+                inputSchema: schema(required: ["path"], properties: [
+                    "workspaceId": ["type": "integer", "description": "Optional workspace id when multiple workspaces are available."],
+                    "path": ["type": "string", "description": "File path inside the workspace, for example Sources/App.swift"],
+                    "startLine": ["type": "integer", "description": "Optional 1-based first line. Defaults to 1."],
+                    "lineCount": ["type": "integer", "description": "Optional number of lines to read. Defaults to 160 and is capped."]
+                ])
+            ))
+            tools.append(ToolDefinition(
                 name: "read_file",
-                description: "Read one UTF-8 text file from a readable workspace. Use this sparingly and do not reread the same file in the same turn once you already have its content. \(help)",
+                description: "Read one full UTF-8 text file from a readable workspace. Use this for small files or when full-file context is necessary; prefer read_file_range for known line areas. \(help)",
                 inputSchema: schema(required: ["path"], properties: [
                     "workspaceId": ["type": "integer", "description": "Optional workspace id when multiple workspaces are available."],
                     "path": ["type": "string", "description": "File path inside the workspace, for example Package.swift or Sources/App.swift"]
@@ -40,7 +70,7 @@ struct ToolExecutionService {
             ))
             tools.append(ToolDefinition(
                 name: "search_in_files",
-                description: "Search readable UTF-8 files in a workspace for a case-insensitive query. Use this before reading broad files. \(help)",
+                description: "Search readable UTF-8 files in a workspace for a case-insensitive literal query. Prefer grep_files when you need line-numbered regex search or include filters. \(help)",
                 inputSchema: schema(required: ["query"], properties: [
                     "workspaceId": ["type": "integer", "description": "Optional workspace id when multiple workspaces are available."],
                     "query": ["type": "string", "description": "Text to search for."],
@@ -72,6 +102,12 @@ struct ToolExecutionService {
             switch toolCall.name {
             case "list_files":
                 return try listFiles(sessionID: sessionID, workspaceID: workspaceID, path: optionalText(args["path"]), limitingToWorkspaceIDs: allowedWorkspaceIDs)
+            case "glob_files":
+                return try globFiles(sessionID: sessionID, workspaceID: workspaceID, pattern: requiredText(args["pattern"], name: "pattern"), path: optionalText(args["path"]), limitingToWorkspaceIDs: allowedWorkspaceIDs)
+            case "grep_files":
+                return try grepFiles(sessionID: sessionID, workspaceID: workspaceID, pattern: requiredText(args["pattern"], name: "pattern"), path: optionalText(args["path"]), include: optionalText(args["include"]), caseSensitive: optionalBool(args["caseSensitive"]), limitingToWorkspaceIDs: allowedWorkspaceIDs)
+            case "read_file_range":
+                return try readFileRange(sessionID: sessionID, workspaceID: workspaceID, path: requiredText(args["path"], name: "path"), startLine: optionalInt(args["startLine"]), lineCount: optionalInt(args["lineCount"]), limitingToWorkspaceIDs: allowedWorkspaceIDs)
             case "read_file":
                 return try readFile(sessionID: sessionID, workspaceID: workspaceID, path: requiredText(args["path"], name: "path"), limitingToWorkspaceIDs: allowedWorkspaceIDs)
             case "search_in_files":
@@ -96,9 +132,35 @@ struct ToolExecutionService {
         return try fileSystemService.readFile(workspace: workspace, relativePath: path)
     }
 
+    func readFileRange(sessionID: Int64, workspaceID: Int64?, path: String, startLine: Int64?, lineCount: Int64?, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
+        return try fileSystemService.readFileRange(
+            workspace: workspace,
+            relativePath: path,
+            startLine: startLine.map(Int.init),
+            lineCount: lineCount.map(Int.init)
+        )
+    }
+
     func searchInFiles(sessionID: Int64, workspaceID: Int64?, query: String, path: String?, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
         let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
         return try fileSystemService.searchInFiles(workspace: workspace, query: query, relativeDirectory: path)
+    }
+
+    func globFiles(sessionID: Int64, workspaceID: Int64?, pattern: String, path: String?, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
+        return try fileSystemService.globFiles(workspace: workspace, pattern: pattern, relativeDirectory: path)
+    }
+
+    func grepFiles(sessionID: Int64, workspaceID: Int64?, pattern: String, path: String?, include: String?, caseSensitive: Bool, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
+        let workspace = try resolveWorkspace(sessionID: sessionID, requestedWorkspaceID: workspaceID, requireWrite: false, limitingToWorkspaceIDs: allowedWorkspaceIDs)
+        return try fileSystemService.grepFiles(
+            workspace: workspace,
+            pattern: pattern,
+            relativePath: path,
+            includePattern: include,
+            caseSensitive: caseSensitive
+        )
     }
 
     func proposeFileWrite(sessionID: Int64, workspaceID: Int64?, path: String, newContent: String, limitingToWorkspaceIDs allowedWorkspaceIDs: Set<Int64>? = nil) throws -> String {
@@ -170,6 +232,24 @@ struct ToolExecutionService {
             return Int64(text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return nil
+    }
+
+    private func optionalBool(_ value: Any?) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        if let text = value as? String {
+            switch text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "1":
+                return true
+            default:
+                return false
+            }
+        }
+        return false
     }
 
     private func schema(required: [String], properties: [String: Any]) -> [String: Any] {

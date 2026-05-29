@@ -198,7 +198,8 @@ struct ChatService {
     ) throws -> String {
         let guidance = """
         You can inspect the workspace with tools, but use them deliberately.
-        Never repeat the same tool call with the same arguments once you already have its result.
+        Avoid unnecessary exact-repeat tool calls, but rerun a tool when current file state matters or when fresh evidence is needed.
+        Prefer glob_files and grep_files for discovery, then read_file_range for narrow context. Use read_file when full-file context is necessary.
         When the user asks for file changes, inspect only what you need, then call propose_file_write with the full replacement content for every file that should be created or changed.
         Do not keep calling read_file on the same target file after you already have its content.
         Never tell the user that you created, proposed, or prepared file changes unless you actually called propose_file_write successfully in this turn.
