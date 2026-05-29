@@ -2,52 +2,61 @@ import SwiftUI
 
 struct ChangesView: View {
     @EnvironmentObject private var appModel: AppModel
+    @State private var filters = ReviewFilters()
+    @State private var selectedGroupID: String?
     @State private var selectedFileChangeID: Int64?
-    @State private var filter: ChangeReviewFilter = .all
+    @State private var selectedFileChangeIDs: Set<Int64> = []
+    @State private var expandedGroupIDs: Set<String> = []
+    @State private var pendingConfirmation: ReviewActionConfirmation?
 
-    private var entries: [ChangeReviewEntry] {
-        ChangeReviewEntry.make(
+    private var projection: ReviewProjectionSnapshot {
+        ReviewProjection.make(
             sessions: appModel.sessions,
             agents: appModel.agents,
             workspaces: appModel.workspaces,
             changeSets: appModel.allChangeSets,
-            fileChanges: appModel.allFileChanges
+            fileChanges: appModel.allFileChanges,
+            preflightResults: appModel.preflightResultsByFileChangeID,
+            handoffs: appModel.reviewContextHandoffs
         )
     }
 
-    private var visibleEntries: [ChangeReviewEntry] {
-        entries.filter { filter.includes($0.change.status) }
+    private var visibleGroups: [ReviewTaskGroup] {
+        projection.filteredGroups(using: filters)
     }
 
-    private var selectedEntry: ChangeReviewEntry? {
-        let id = selectedFileChangeID ?? visibleEntries.first?.id
-        return visibleEntries.first { $0.id == id }
+    private var visibleItems: [ReviewChangeItem] {
+        visibleGroups.flatMap(\.items)
     }
 
-    private var selectionSignature: String {
-        visibleEntries
-            .map { "\($0.id):\($0.change.status)" }
+    private var selectedGroup: ReviewTaskGroup? {
+        if let selectedGroupID,
+           let group = visibleGroups.first(where: { $0.id == selectedGroupID }) {
+            return group
+        }
+        return visibleGroups.first
+    }
+
+    private var selectedItem: ReviewChangeItem? {
+        guard let selectedFileChangeID else { return nil }
+        return visibleItems.first { $0.id == selectedFileChangeID }
+    }
+
+    private var selectedPendingIDs: [Int64] {
+        selectedFileChangeIDs
+            .compactMap { id in visibleItems.first { $0.id == id } }
+            .filter(\.pending)
+            .map(\.id)
+            .sorted()
+    }
+
+    private var queueSignature: String {
+        visibleGroups
+            .map { group in
+                let fileState = group.items.map { "\($0.id):\($0.change.status):\($0.preflight?.status.rawValue ?? "NONE")" }.joined(separator: ",")
+                return "\(group.id):\(group.syncState.rawValue):\(fileState)"
+            }
             .joined(separator: "|")
-    }
-
-    private var pendingCount: Int {
-        entries.filter(\.change.pending).count
-    }
-
-    private var appliedCount: Int {
-        entries.filter { $0.change.status.caseInsensitiveCompare("APPLIED") == .orderedSame }.count
-    }
-
-    private var rejectedCount: Int {
-        entries.filter { $0.change.status.caseInsensitiveCompare("REJECTED") == .orderedSame }.count
-    }
-
-    private var blockedCount: Int {
-        entries.filter { appModel.preflightResultsByFileChangeID[$0.id]?.status == .blocked }.count
-    }
-
-    private var warningCount: Int {
-        entries.filter { appModel.preflightResultsByFileChangeID[$0.id]?.status == .warning }.count
     }
 
     var body: some View {
@@ -56,91 +65,75 @@ struct ChangesView: View {
                 header
                 Divider()
 
-                if entries.isEmpty {
-                    ContentUnavailableView(
-                        "No Changes",
-                        systemImage: "doc.text.magnifyingglass",
-                        description: Text("Agent file proposals will appear here.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(nsColor: .textBackgroundColor))
-                } else if visibleEntries.isEmpty {
+                if projection.groups.isEmpty {
+                    emptyState
+                } else if visibleGroups.isEmpty {
                     emptyFilteredState
-                } else if geometry.size.width < 860 {
-                    VStack(spacing: 0) {
-                        reviewQueue
-                            .frame(height: max(220, geometry.size.height * 0.36))
-                        Divider()
-                        detailPane
-                    }
                 } else {
-                    HStack(spacing: 0) {
-                        reviewQueue
-                            .frame(width: min(max(340, geometry.size.width * 0.36), 460))
-                        Divider()
-                        detailPane
-                    }
+                    workbench(width: geometry.size.width)
                 }
             }
             .background(Color(nsColor: .textBackgroundColor))
         }
         .navigationTitle("Changes")
         .toolbar {
-            Button {
-                refreshChanges()
-            } label: {
-                Label("Refresh Changes", systemImage: "arrow.clockwise")
+            ToolbarItemGroup {
+                Button {
+                    refreshChanges()
+                } label: {
+                    Label("Refresh Changes", systemImage: "arrow.clockwise")
+                }
+
+                Button {
+                    sendFinishedVisibleUpdates()
+                } label: {
+                    Label("Send Finished Updates", systemImage: "arrow.up.message")
+                }
+                .disabled(!visibleGroups.contains { $0.canSendFinishedLeadContext && $0.needsLeadContext })
             }
+        }
+        .confirmationDialog(confirmationTitle, isPresented: confirmationPresented) {
+            if let pendingConfirmation {
+                Button(pendingConfirmation.buttonTitle, role: pendingConfirmation.buttonRole) {
+                    performConfirmedAction(pendingConfirmation)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(confirmationMessage)
         }
         .onAppear {
             refreshChanges()
         }
-        .onChange(of: selectionSignature) {
+        .onChange(of: queueSignature) {
             keepSelectionValid()
         }
-        .onChange(of: filter) {
+        .onChange(of: filters) {
             keepSelectionValid()
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Label("Review Queue", systemImage: "doc.text.magnifyingglass")
-                    .font(.title3.weight(.semibold))
+        HStack(alignment: .center, spacing: 12) {
+            Label("Review Workbench", systemImage: "doc.text.magnifyingglass")
+                .font(.title3.weight(.semibold))
 
-                ChangeCountPill(text: "\(pendingCount) pending", color: .orange)
-                ChangeCountPill(text: "\(appliedCount) applied", color: .green)
-                ChangeCountPill(text: "\(rejectedCount) rejected", color: .secondary)
-                if blockedCount > 0 {
-                    ChangeCountPill(text: "\(blockedCount) blocked", color: .red)
-                }
-                if warningCount > 0 {
-                    ChangeCountPill(text: "\(warningCount) warning", color: .yellow)
-                }
+            ReviewCountPill(text: "\(projection.summary.pendingCount) pending", color: .orange)
+            ReviewCountPill(text: "\(projection.summary.blockedCount) blocked", color: .red)
+            ReviewCountPill(text: "\(projection.summary.warningCount) warning", color: .yellow)
+            ReviewCountPill(text: "\(projection.summary.needsLeadSyncCount) sync", color: .blue)
 
-                Spacer(minLength: 12)
+            Spacer(minLength: 12)
 
-                Picker("Status", selection: $filter) {
-                    ForEach(ChangeReviewFilter.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 360)
-            }
+            TextField("Search files, sessions, agents", text: $filters.searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 260)
 
-            if let selectedEntry {
-                HStack(spacing: 8) {
-                    ChangeStatusPill(text: selectedEntry.change.status.capitalized)
-                    Text(selectedEntry.sessionTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Text("Session #\(selectedEntry.sessionID.map(String.init) ?? "-")")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
+            if filters.hasActiveFacets {
+                Button {
+                    filters.reset()
+                } label: {
+                    Label("Clear Filters", systemImage: "xmark.circle")
                 }
             }
         }
@@ -148,36 +141,161 @@ struct ChangesView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var reviewQueue: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("\(visibleEntries.count) file\(visibleEntries.count == 1 ? "" : "s")")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if filter != .all {
-                    Button("Show All") {
-                        filter = .all
+    private func workbench(width: CGFloat) -> some View {
+        Group {
+            if width < 1060 {
+                VStack(spacing: 0) {
+                    compactFilterBar
+                    Divider()
+                    HStack(spacing: 0) {
+                        reviewQueue
+                            .frame(width: min(max(360, width * 0.42), 470))
+                        Divider()
+                        detailPane
                     }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    filterRail
+                        .frame(width: 258)
+                    Divider()
+                    reviewQueue
+                        .frame(width: min(max(390, width * 0.34), 510))
+                    Divider()
+                    detailPane
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+        }
+    }
 
-            Divider()
-
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(visibleEntries) { entry in
-                        ChangeReviewRow(
-                            entry: entry,
-                            preflight: appModel.preflightResultsByFileChangeID[entry.id],
-                            isSelected: selectedFileChangeID == entry.id || (selectedFileChangeID == nil && visibleEntries.first?.id == entry.id)
-                        ) {
-                            selectedFileChangeID = entry.id
+    private var filterRail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                filterPickerSection(title: "Status") {
+                    Picker("Status", selection: $filters.status) {
+                        ForEach(ReviewStatusFilter.allCases) { option in
+                            Text(option.title).tag(option)
                         }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                filterPickerSection(title: "Safety") {
+                    Picker("Safety", selection: $filters.safety) {
+                        ForEach(ReviewSafetyFilter.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                filterPickerSection(title: "Lead Sync") {
+                    Picker("Lead Sync", selection: $filters.sync) {
+                        ForEach(ReviewSyncFilter.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                facetSection(
+                    title: "Projects",
+                    allTitle: "All Projects",
+                    selectedID: filters.workspaceID,
+                    options: projection.workspaceFacets
+                ) { filters.workspaceID = $0 }
+
+                facetSection(
+                    title: "Leads",
+                    allTitle: "All Leads",
+                    selectedID: filters.rootSessionID,
+                    options: projection.leadFacets
+                ) { filters.rootSessionID = $0 }
+
+                roleFacetSection
+
+                facetSection(
+                    title: "Agents",
+                    allTitle: "All Agents",
+                    selectedID: filters.agentID,
+                    options: projection.agentFacets
+                ) { filters.agentID = $0 }
+
+                facetSection(
+                    title: "Sessions",
+                    allTitle: "All Sessions",
+                    selectedID: filters.sessionID,
+                    options: projection.sessionFacets
+                ) { filters.sessionID = $0 }
+            }
+            .padding(12)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var compactFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                Picker("Status", selection: $filters.status) {
+                    ForEach(ReviewStatusFilter.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 300)
+
+                Picker("Safety", selection: $filters.safety) {
+                    ForEach(ReviewSafetyFilter.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 300)
+
+                filterMenu(
+                    title: filters.workspaceID.flatMap { selectedFacetTitle(id: $0, options: projection.workspaceFacets) } ?? "Projects",
+                    allTitle: "All Projects",
+                    selectedID: filters.workspaceID,
+                    options: projection.workspaceFacets
+                ) { filters.workspaceID = $0 }
+
+                filterMenu(
+                    title: filters.rootSessionID.flatMap { selectedFacetTitle(id: $0, options: projection.leadFacets) } ?? "Leads",
+                    allTitle: "All Leads",
+                    selectedID: filters.rootSessionID,
+                    options: projection.leadFacets
+                ) { filters.rootSessionID = $0 }
+
+                Menu(filters.role?.title ?? "Roles") {
+                    Button("All Roles") { filters.role = nil }
+                    ForEach(projection.roleFacets) { option in
+                        Button("\(option.title) (\(option.count))") {
+                            filters.role = option.role
+                        }
+                    }
+                }
+
+                filterMenu(
+                    title: filters.agentID.flatMap { selectedFacetTitle(id: $0, options: projection.agentFacets) } ?? "Agents",
+                    allTitle: "All Agents",
+                    selectedID: filters.agentID,
+                    options: projection.agentFacets
+                ) { filters.agentID = $0 }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var reviewQueue: some View {
+        VStack(spacing: 0) {
+            queueToolbar
+            Divider()
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(visibleGroups) { group in
+                        groupCard(group)
                     }
                 }
                 .padding(10)
@@ -186,35 +304,79 @@ struct ChangesView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private var queueToolbar: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(visibleGroups.count) task\(visibleGroups.count == 1 ? "" : "s")")
+                    .font(.caption.weight(.semibold))
+                Text("\(visibleItems.count) file\(visibleItems.count == 1 ? "" : "s") visible")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                requestApprove(ids: selectedPendingIDs)
+            } label: {
+                Label("Approve Selected", systemImage: "checkmark.circle")
+            }
+            .disabled(selectedPendingIDs.isEmpty)
+
+            Button(role: .destructive) {
+                requestReject(ids: selectedPendingIDs)
+            } label: {
+                Label("Reject Selected", systemImage: "xmark.circle")
+            }
+            .disabled(selectedPendingIDs.isEmpty)
+
+            Menu {
+                Button {
+                    requestApprove(ids: visibleItems.filter(\.ready).map(\.id))
+                } label: {
+                    Label("Approve Visible Ready", systemImage: "checkmark.shield")
+                }
+                .disabled(!visibleItems.contains(where: \.ready))
+
+                Button {
+                    selectVisiblePending()
+                } label: {
+                    Label("Select Visible Pending", systemImage: "checklist")
+                }
+                .disabled(!visibleItems.contains(where: \.pending))
+
+                Button {
+                    selectedFileChangeIDs.removeAll()
+                } label: {
+                    Label("Clear Selection", systemImage: "xmark")
+                }
+                .disabled(selectedFileChangeIDs.isEmpty)
+
+                Divider()
+
+                Button {
+                    sendFinishedVisibleUpdates()
+                } label: {
+                    Label("Send Finished Lead Updates", systemImage: "arrow.up.message")
+                }
+                .disabled(!visibleGroups.contains { $0.canSendFinishedLeadContext && $0.needsLeadContext })
+            } label: {
+                Label("Batch Actions", systemImage: "ellipsis.circle")
+            }
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
     private var detailPane: some View {
         Group {
-            if let selectedEntry {
-                ChangeReviewDetailPane(
-                    entry: selectedEntry,
-                    preflight: appModel.preflightResultsByFileChangeID[selectedEntry.id],
-                    sessionPreflights: selectedEntry.sessionID.map(sessionPreflights) ?? [],
-                    onApproveFile: { appModel.approveFileChange(id: selectedEntry.id) },
-                    onRejectFile: { appModel.rejectFileChange(id: selectedEntry.id) },
-                    onApproveSession: {
-                        guard let sessionID = selectedEntry.sessionID else { return }
-                        appModel.approvePendingChanges(sessionID: sessionID)
-                    },
-                    onRejectSession: {
-                        guard let sessionID = selectedEntry.sessionID else { return }
-                        appModel.rejectPendingChanges(sessionID: sessionID)
-                    },
-                    onAskLeadToReview: {
-                        guard let sessionID = selectedEntry.sessionID else { return }
-                        appModel.sendAppliedChangeReviewRequest(sessionID: sessionID)
-                    },
-                    onOpenSession: {
-                        guard let sessionID = selectedEntry.sessionID else { return }
-                        appModel.selectedSection = .sessions
-                        appModel.selectSession(id: sessionID)
-                    }
-                )
+            if let selectedItem, let group = group(containing: selectedItem.id) {
+                fileDetail(item: selectedItem, group: group)
+            } else if let selectedGroup {
+                taskDetail(group: selectedGroup)
             } else {
-                ContentUnavailableView("No File Selected", systemImage: "doc.text")
+                ContentUnavailableView("No Review Task", systemImage: "doc.text")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -222,382 +384,516 @@ struct ChangesView: View {
         .background(Color(nsColor: .textBackgroundColor))
     }
 
+    private var emptyState: some View {
+        ContentUnavailableView(
+            "No Changes",
+            systemImage: "doc.text.magnifyingglass",
+            description: Text("Agent file proposals will appear here.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
     private var emptyFilteredState: some View {
         ContentUnavailableView {
-            Label("No \(filter.title) Changes", systemImage: filter.systemImage)
+            Label("No Matching Changes", systemImage: "line.3.horizontal.decrease.circle")
         } description: {
-            Text("Switch filters to view the rest of the queue.")
+            Text("Clear or adjust filters to show the rest of the queue.")
         } actions: {
-            Button("Show All") {
-                filter = .all
+            Button("Clear Filters") {
+                filters.reset()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
     }
 
-    private func refreshChanges() {
-        appModel.refreshSnapshot()
-        keepSelectionValid()
-    }
-
-    private func keepSelectionValid() {
-        if let selectedFileChangeID,
-           visibleEntries.contains(where: { $0.id == selectedFileChangeID }) {
-            return
-        }
-        selectedFileChangeID = visibleEntries.first?.id
-    }
-
-    private func sessionPreflights(sessionID: Int64) -> [ChangePreflightResult] {
-        entries
-            .filter { $0.sessionID == sessionID && $0.change.pending }
-            .compactMap { appModel.preflightResultsByFileChangeID[$0.id] }
-    }
-}
-
-private enum ChangeReviewFilter: String, CaseIterable, Identifiable {
-    case all
-    case pending
-    case applied
-    case rejected
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: "All"
-        case .pending: "Pending"
-        case .applied: "Applied"
-        case .rejected: "Rejected"
+    private func filterPickerSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content()
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .all: "tray.full"
-        case .pending: "clock"
-        case .applied: "checkmark.circle"
-        case .rejected: "xmark.circle"
-        }
-    }
+    private func facetSection(
+        title: String,
+        allTitle: String,
+        selectedID: Int64?,
+        options: [ReviewFacetOption],
+        onSelect: @escaping (Int64?) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
 
-    func includes(_ status: String) -> Bool {
-        switch self {
-        case .all:
-            return true
-        case .pending:
-            return status.caseInsensitiveCompare("PENDING") == .orderedSame
-        case .applied:
-            return status.caseInsensitiveCompare("APPLIED") == .orderedSame
-        case .rejected:
-            return status.caseInsensitiveCompare("REJECTED") == .orderedSame
-        }
-    }
-}
+            ReviewFacetButton(
+                title: allTitle,
+                subtitle: nil,
+                count: options.reduce(0) { $0 + $1.count },
+                isSelected: selectedID == nil
+            ) {
+                onSelect(nil)
+            }
 
-private struct ChangeReviewEntry: Identifiable, Equatable {
-    let change: FileChange
-    let changeSet: ChangeSet?
-    let session: Session?
-    let agentName: String
-    let workspaceName: String
-    let sessionTitle: String
-    let roleText: String
-    let createdAt: Date?
-    let sessionPendingCount: Int
-    let sessionAppliedCount: Int
-
-    var id: Int64 { change.id }
-    var sessionID: Int64? { changeSet?.sessionID }
-    var sortDate: Date { createdAt ?? session?.startedAt ?? .distantPast }
-    var canOpenSession: Bool { sessionID != nil }
-    var canBulkReview: Bool { sessionID != nil && sessionPendingCount > 0 }
-    var canAskLeadToReview: Bool {
-        session?.parentSessionID != nil && sessionAppliedCount > 0
-    }
-
-    static func make(
-        sessions: [Session],
-        agents: [Agent],
-        workspaces: [Workspace],
-        changeSets: [ChangeSet],
-        fileChanges: [FileChange]
-    ) -> [ChangeReviewEntry] {
-        let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
-        let workspacesByID = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0) })
-        let changeSetsByID = Dictionary(uniqueKeysWithValues: changeSets.map { ($0.id, $0) })
-        let sessionIDsByChangeID: [Int64: Int64] = Dictionary(
-            uniqueKeysWithValues: fileChanges.compactMap { change in
-                guard let sessionID = changeSetsByID[change.changeSetID]?.sessionID else {
-                    return nil
+            ForEach(options) { option in
+                ReviewFacetButton(
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    count: option.count,
+                    isSelected: selectedID == option.id
+                ) {
+                    onSelect(option.id)
                 }
-                return (change.id, sessionID)
             }
-        )
-        let changesBySession = Dictionary(grouping: fileChanges) { change in
-            sessionIDsByChangeID[change.id]
         }
-        let pendingCountBySession = changesBySession.mapValues { changes in
-            changes.filter(\.pending).count
-        }
-        let appliedCountBySession = changesBySession.mapValues { changes in
-            changes.filter { $0.status.caseInsensitiveCompare("APPLIED") == .orderedSame }.count
-        }
+    }
 
-        return fileChanges.map { change in
-            let changeSet = changeSetsByID[change.changeSetID]
-            let session = changeSet.flatMap { sessionsByID[$0.sessionID] }
-            let agentName = session.flatMap { agentsByID[$0.agentID]?.name } ?? "Unknown Agent"
-            let workspaceName = changeSet?.workspaceID.flatMap { workspacesByID[$0]?.name }
-                ?? session?.workspaceID.flatMap { workspacesByID[$0]?.name }
-                ?? "No workspace"
-            let sessionTitle = session.map { session in
-                session.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Session #\(session.id)"
-                    : session.summary
-            } ?? "Missing session"
-            let roleText = session.map { session in
-                if session.hasParentProvenance {
-                    return session.orchestrationRole?.title ?? "Sub-Agent Session"
+    private var roleFacetSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Roles")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ReviewFacetButton(
+                title: "All Roles",
+                subtitle: nil,
+                count: projection.roleFacets.reduce(0) { $0 + $1.count },
+                isSelected: filters.role == nil
+            ) {
+                filters.role = nil
+            }
+
+            ForEach(projection.roleFacets) { option in
+                ReviewFacetButton(
+                    title: option.title,
+                    subtitle: nil,
+                    count: option.count,
+                    isSelected: filters.role == option.role
+                ) {
+                    filters.role = option.role
                 }
-                return "Lead Session"
-            } ?? "Detached Change"
-            let sessionID = changeSet?.sessionID
-
-            return ChangeReviewEntry(
-                change: change,
-                changeSet: changeSet,
-                session: session,
-                agentName: agentName,
-                workspaceName: workspaceName,
-                sessionTitle: sessionTitle,
-                roleText: roleText,
-                createdAt: changeSet?.createdAt,
-                sessionPendingCount: sessionID.flatMap { pendingCountBySession[$0] } ?? 0,
-                sessionAppliedCount: sessionID.flatMap { appliedCountBySession[$0] } ?? 0
-            )
-        }
-        .sorted { lhs, rhs in
-            let lhsRank = statusRank(lhs.change.status)
-            let rhsRank = statusRank(rhs.change.status)
-            if lhsRank != rhsRank {
-                return lhsRank < rhsRank
             }
-            if lhs.sortDate != rhs.sortDate {
-                return lhs.sortDate > rhs.sortDate
-            }
-            return lhs.change.filePath.localizedCaseInsensitiveCompare(rhs.change.filePath) == .orderedAscending
         }
     }
 
-    private static func statusRank(_ status: String) -> Int {
-        if status.caseInsensitiveCompare("PENDING") == .orderedSame { return 0 }
-        if status.caseInsensitiveCompare("APPLIED") == .orderedSame { return 1 }
-        if status.caseInsensitiveCompare("REJECTED") == .orderedSame { return 2 }
-        return 3
+    private func filterMenu(
+        title: String,
+        allTitle: String,
+        selectedID: Int64?,
+        options: [ReviewFacetOption],
+        onSelect: @escaping (Int64?) -> Void
+    ) -> some View {
+        Menu(title) {
+            Button(allTitle) { onSelect(nil) }
+            ForEach(options) { option in
+                Button("\(option.title) (\(option.count))") {
+                    onSelect(option.id)
+                }
+            }
+        }
     }
-}
 
-private struct ChangeReviewRow: View {
-    let entry: ChangeReviewEntry
-    let preflight: ChangePreflightResult?
-    let isSelected: Bool
-    let onSelect: () -> Void
+    private func selectedFacetTitle(id: Int64, options: [ReviewFacetOption]) -> String? {
+        options.first { $0.id == id }?.title
+    }
 
-    var body: some View {
-        Button(action: onSelect) {
+    private func groupCard(_ group: ReviewTaskGroup) -> some View {
+        let isSelected = selectedGroup?.id == group.id && selectedFileChangeID == nil
+        let isExpanded = expandedGroupIDs.contains(group.id)
+        return VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(entry.change.filePath)
-                        .font(.callout.weight(.semibold))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
+                    Button {
+                        toggleExpanded(group.id)
+                    } label: {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .frame(width: 18)
+                    }
+                    .buttonStyle(.plain)
+
+                    Image(systemName: group.role?.systemImage ?? "message")
+                        .foregroundStyle(group.blockedCount > 0 ? .red : .secondary)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.taskTitle)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        Text("\(group.roleText)  |  \(group.agentName)  |  \(group.workspaceName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
                     Spacer(minLength: 8)
-                    ChangeStatusPill(text: entry.change.status.capitalized)
-                    if entry.change.pending, let preflight {
+
+                    ReviewSyncPill(state: group.syncState)
+                }
+
+                HStack(spacing: 6) {
+                    if group.pendingCount > 0 {
+                        ReviewCountPill(text: "\(group.pendingCount) pending", color: .orange)
+                    }
+                    if group.appliedCount > 0 {
+                        ReviewCountPill(text: "\(group.appliedCount) applied", color: .green)
+                    }
+                    if group.rejectedCount > 0 {
+                        ReviewCountPill(text: "\(group.rejectedCount) rejected", color: .secondary)
+                    }
+                    if group.blockedCount > 0 {
+                        ReviewCountPill(text: "\(group.blockedCount) blocked", color: .red)
+                    }
+                    if group.warningCount > 0 {
+                        ReviewCountPill(text: "\(group.warningCount) warning", color: .yellow)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Text(group.sessionID.map { "#\($0)" } ?? "No session")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.accentColor.opacity(0.14) : Color(nsColor: .controlBackgroundColor))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectGroup(group)
+            }
+
+            if isExpanded {
+                Divider()
+                VStack(spacing: 0) {
+                    ForEach(group.items) { item in
+                        fileRow(item, group: group)
+                        if item.id != group.items.last?.id {
+                            Divider()
+                                .padding(.leading, 34)
+                        }
+                    }
+                }
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.4))
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contextMenu {
+            Button("Approve Pending in Task") {
+                requestApprove(ids: group.pendingItems.map(\.id))
+            }
+            .disabled(group.pendingCount == 0)
+
+            Button("Reject Pending in Task", role: .destructive) {
+                requestReject(ids: group.pendingItems.map(\.id))
+            }
+            .disabled(group.pendingCount == 0)
+
+            Divider()
+
+            Button("Send Lead Update") {
+                appModel.sendLeadUpdate(for: group)
+            }
+            .disabled(!group.canSendLeadContext)
+        }
+    }
+
+    private func fileRow(_ item: ReviewChangeItem, group: ReviewTaskGroup) -> some View {
+        let isSelected = selectedFileChangeID == item.id
+        let isChecked = selectedFileChangeIDs.contains(item.id)
+        return HStack(spacing: 8) {
+            Button {
+                toggleFileSelection(item.id)
+            } label: {
+                Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+                    .frame(width: 18)
+            }
+            .buttonStyle(.plain)
+            .disabled(!item.pending)
+
+            Button {
+                selectFile(item, group: group)
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.change.filePath)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        Text("Proposal #\(item.id)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+
+                    Spacer(minLength: 8)
+
+                    ChangeStatusPill(text: item.change.status.capitalized)
+                    if item.pending, let preflight = item.preflight {
+                        ChangePreflightPill(result: preflight)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+    }
+
+    private func taskDetail(group: ReviewTaskGroup) -> some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: group.role?.systemImage ?? "message")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(group.taskTitle)
+                                    .font(.title3.weight(.semibold))
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
+                                Text("\(group.roleText)  |  \(group.agentName)  |  \(group.workspaceName)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            ReviewSyncPill(state: group.syncState)
+                        }
+
+                        HStack(spacing: 6) {
+                            ReviewCountPill(text: "\(group.fileCount) files", color: .secondary)
+                            ReviewCountPill(text: "\(group.pendingCount) pending", color: .orange)
+                            ReviewCountPill(text: "\(group.appliedCount) applied", color: .green)
+                            ReviewCountPill(text: "\(group.rejectedCount) rejected", color: .secondary)
+                            if group.blockedCount > 0 {
+                                ReviewCountPill(text: "\(group.blockedCount) blocked", color: .red)
+                            }
+                            if group.warningCount > 0 {
+                                ReviewCountPill(text: "\(group.warningCount) warning", color: .yellow)
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            openSession(group.sessionID)
+                        } label: {
+                            Label("Open Task", systemImage: "message")
+                        }
+                        .disabled(group.sessionID == nil)
+
+                        if let rootSessionID = group.rootSessionID, rootSessionID != group.sessionID {
+                            Button {
+                                openSession(rootSessionID)
+                            } label: {
+                                Label("Open Lead", systemImage: "person.2.wave.2")
+                            }
+                        }
+
+                        Button {
+                            requestApprove(ids: group.pendingItems.map(\.id))
+                        } label: {
+                            Label("Approve Task", systemImage: "checkmark.circle")
+                        }
+                        .disabled(group.pendingCount == 0)
+
+                        Button(role: .destructive) {
+                            requestReject(ids: group.pendingItems.map(\.id))
+                        } label: {
+                            Label("Reject Task", systemImage: "xmark.circle")
+                        }
+                        .disabled(group.pendingCount == 0)
+
+                        Menu {
+                            Button {
+                                appModel.sendLeadUpdate(for: group)
+                            } label: {
+                                Label("Send Lead Update", systemImage: "arrow.up.message")
+                            }
+                            .disabled(!group.canSendLeadContext)
+
+                            Button {
+                                appModel.sendLeadUpdate(for: group, allowDuplicate: true)
+                            } label: {
+                                Label("Resend Lead Update", systemImage: "arrow.counterclockwise")
+                            }
+                            .disabled(!group.canSendLeadContext)
+                        } label: {
+                            Label("Lead Context", systemImage: "pin")
+                        }
+                    }
+                    .controlSize(.small)
+
+                    if group.canSendLeadContext {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Lead Update Preview")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(ReviewContextPayload.message(for: group))
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(Color(nsColor: .controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Files")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        ForEach(group.items) { item in
+                            Button {
+                                selectFile(item, group: group)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(item.change.filePath)
+                                        .lineLimit(2)
+                                    Spacer()
+                                    ChangeStatusPill(text: item.change.status.capitalized)
+                                    if item.pending, let preflight = item.preflight {
+                                        ChangePreflightPill(result: preflight)
+                                    }
+                                }
+                                .font(.caption)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(nsColor: .controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private func fileDetail(item: ReviewChangeItem, group: ReviewTaskGroup) -> some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(item.change.filePath)
+                            .font(.title3.weight(.semibold))
+                            .textSelection(.enabled)
+                            .lineLimit(3)
+                        Text("\(item.roleText)  |  \(item.agentName)  |  \(item.workspaceName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    ChangeStatusPill(text: item.change.status.capitalized)
+                    if item.pending, let preflight = item.preflight {
                         ChangePreflightPill(result: preflight)
                     }
                 }
 
-                HStack(spacing: 7) {
-                    Label(entry.roleText, systemImage: roleSymbol)
-                    Text(entry.agentName)
-                    Text(entry.workspaceName)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
                 HStack(spacing: 8) {
-                    Text(entry.sessionTitle)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    if let createdAt = entry.createdAt {
-                        Text(createdAt.formatted(date: .abbreviated, time: .shortened))
-                            .monospacedDigit()
+                    Button {
+                        openSession(item.sessionID)
+                    } label: {
+                        Label("Open Session", systemImage: "message")
                     }
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(rowBackground)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? Color.accentColor.opacity(0.55) : Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-    }
+                    .disabled(item.sessionID == nil)
 
-    private var roleSymbol: String {
-        if let role = entry.session?.orchestrationRole {
-            return role.systemImage
-        }
-        return entry.session?.hasParentProvenance == true ? "arrow.triangle.branch" : "message"
-    }
+                    if item.pending {
+                        Button(role: .destructive) {
+                            requestReject(ids: [item.id])
+                        } label: {
+                            Label("Reject File", systemImage: "xmark.circle")
+                        }
 
-    private var rowBackground: some ShapeStyle {
-        if isSelected {
-            return Color.accentColor.opacity(0.14)
-        }
-        return Color(nsColor: .controlBackgroundColor)
-    }
-}
+                        Button {
+                            requestApprove(ids: [item.id])
+                        } label: {
+                            Label("Approve File", systemImage: "checkmark.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!item.canApprove)
+                    }
 
-private struct ChangeReviewDetailPane: View {
-    let entry: ChangeReviewEntry
-    let preflight: ChangePreflightResult?
-    let sessionPreflights: [ChangePreflightResult]
-    let onApproveFile: () -> Void
-    let onRejectFile: () -> Void
-    let onApproveSession: () -> Void
-    let onRejectSession: () -> Void
-    let onAskLeadToReview: () -> Void
-    let onOpenSession: () -> Void
+                    Menu {
+                        Button {
+                            requestApprove(ids: group.pendingItems.map(\.id))
+                        } label: {
+                            Label("Approve Pending in Task", systemImage: "checkmark.circle")
+                        }
+                        .disabled(group.pendingCount == 0)
 
-    @State private var pendingConfirmation: ChangeApprovalConfirmation?
+                        Button(role: .destructive) {
+                            requestReject(ids: group.pendingItems.map(\.id))
+                        } label: {
+                            Label("Reject Pending in Task", systemImage: "xmark.circle")
+                        }
+                        .disabled(group.pendingCount == 0)
 
-    private var diffLines: [String] {
-        let diffText = entry.change.diffText.trimmingCharacters(in: .newlines)
-        guard !diffText.isEmpty else {
-            return ["No diff preview available."]
-        }
-        return diffText.components(separatedBy: .newlines)
-    }
+                        Divider()
 
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            diffViewer
-        }
-    }
+                        Button {
+                            appModel.sendLeadUpdate(for: group)
+                        } label: {
+                            Label("Send Lead Update", systemImage: "arrow.up.message")
+                        }
+                        .disabled(!group.canSendLeadContext)
+                    } label: {
+                        Label("Task Actions", systemImage: "ellipsis.circle")
+                    }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(entry.change.filePath)
-                        .font(.title3.weight(.semibold))
-                        .textSelection(.enabled)
-                        .lineLimit(3)
-                    Text("\(entry.roleText)  |  \(entry.agentName)  |  \(entry.workspaceName)")
+                    Spacer()
+
+                    Text("Proposal #\(item.id)")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
                 }
+                .controlSize(.small)
 
-                Spacer(minLength: 12)
-
-                ChangeStatusPill(text: entry.change.status.capitalized)
+                if item.pending, let preflight = item.preflight {
+                    ChangePreflightBanner(result: preflight)
+                }
             }
+            .padding(16)
+            .background(Color(nsColor: .windowBackgroundColor))
 
-            HStack(spacing: 8) {
-                Button {
-                    onOpenSession()
-                } label: {
-                    Label("Open Session", systemImage: "message")
-                }
-                .disabled(!entry.canOpenSession)
+            Divider()
 
-                if entry.change.pending {
-                    Button(role: .destructive) {
-                        onRejectFile()
-                    } label: {
-                        Label("Reject File", systemImage: "xmark.circle")
-                    }
-
-                    Button {
-                        approveFile()
-                    } label: {
-                        Label("Approve File", systemImage: "checkmark.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(preflight?.canApprove == false)
-                }
-
-                Menu {
-                    Button {
-                        approveSession()
-                    } label: {
-                        Label("Preflight And Apply Pending", systemImage: "checkmark.circle")
-                    }
-                    .disabled(!canApproveSession)
-
-                    Button(role: .destructive) {
-                        onRejectSession()
-                    } label: {
-                        Label("Reject Pending in Session", systemImage: "xmark.circle")
-                    }
-                    .disabled(!entry.canBulkReview)
-
-                    Divider()
-
-                    Button {
-                        onAskLeadToReview()
-                    } label: {
-                        Label("Ask Lead to Review Applied Changes", systemImage: "arrow.triangle.branch")
-                    }
-                    .disabled(!entry.canAskLeadToReview)
-                } label: {
-                    Label("Session Actions", systemImage: "ellipsis.circle")
-                }
-
-                Spacer()
-
-                Text("Proposal #\(entry.id)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
-            }
-            .controlSize(.small)
-
-            if entry.change.pending, let preflight {
-                ChangePreflightBanner(result: preflight)
-            }
+            diffViewer(item.change.diffText)
         }
-        .padding(16)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .confirmationDialog("Approve With Warnings?", isPresented: confirmationPresented) {
-            if let pendingConfirmation {
-                Button(pendingConfirmation.buttonTitle) {
-                    switch pendingConfirmation {
-                    case .file:
-                        onApproveFile()
-                    case .session:
-                        onApproveSession()
-                    }
+    }
+
+    private func diffViewer(_ diffText: String) -> some View {
+        let lines = diffText.trimmingCharacters(in: .newlines).isEmpty
+            ? ["No diff preview available."]
+            : diffText.trimmingCharacters(in: .newlines).components(separatedBy: .newlines)
+        return ScrollView([.vertical, .horizontal]) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    DiffLineView(number: index + 1, text: line)
                 }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(pendingConfirmation?.message ?? "Review the warning before continuing.")
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var confirmationPresented: Binding<Bool> {
@@ -610,73 +906,266 @@ private struct ChangeReviewDetailPane: View {
         }
     }
 
-    private var canApproveSession: Bool {
-        entry.canBulkReview && !sessionPreflights.contains { $0.status == .blocked }
+    private var confirmationTitle: String {
+        pendingConfirmation?.title ?? "Confirm Review Action"
     }
 
-    private func approveFile() {
-        guard preflight?.hasWarnings == true else {
-            onApproveFile()
+    private var confirmationMessage: String {
+        pendingConfirmation?.message ?? "Review the selected action before continuing."
+    }
+
+    private func performConfirmedAction(_ action: ReviewActionConfirmation) {
+        switch action {
+        case .approve(let ids, _):
+            appModel.approveFileChanges(ids: ids)
+            selectedFileChangeIDs.subtract(ids)
+        case .reject(let ids):
+            appModel.rejectFileChanges(ids: ids)
+            selectedFileChangeIDs.subtract(ids)
+        }
+    }
+
+    private func requestApprove(ids: [Int64]) {
+        let unique = uniquePendingItems(ids)
+        guard !unique.isEmpty else {
+            appModel.statusText = "No pending selected changes can be approved."
             return
         }
-        pendingConfirmation = .file(preflight?.issues.filter { $0.severity == .warning } ?? [])
-    }
 
-    private func approveSession() {
-        let warnings = sessionPreflights.flatMap { result in
-            result.issues.filter { $0.severity == .warning }
-        }
-        guard !warnings.isEmpty else {
-            onApproveSession()
+        let approvable = unique.filter(\.canApprove)
+        let blocked = unique.filter { !$0.canApprove }
+        guard !approvable.isEmpty else {
+            appModel.statusText = "Approval blocked for \(blocked.count) selected change\(blocked.count == 1 ? "" : "s")."
             return
         }
-        pendingConfirmation = .session(warnings)
+
+        let warnings = approvable.flatMap { item in
+            item.preflight?.issues.filter { $0.severity == .warning } ?? []
+        }
+        let approvableIDs = approvable.map(\.id)
+        if warnings.isEmpty {
+            appModel.approveFileChanges(ids: approvableIDs)
+            selectedFileChangeIDs.subtract(approvableIDs)
+        } else {
+            pendingConfirmation = .approve(ids: approvableIDs, warnings: warnings)
+        }
     }
 
-    private var diffViewer: some View {
-        ScrollView([.vertical, .horizontal]) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(diffLines.enumerated()), id: \.offset) { index, line in
-                    DiffLineView(number: index + 1, text: line)
-                }
+    private func requestReject(ids: [Int64]) {
+        let unique = uniquePendingItems(ids)
+        guard !unique.isEmpty else {
+            appModel.statusText = "No pending selected changes can be rejected."
+            return
+        }
+        let ids = unique.map(\.id)
+        if ids.count == 1 {
+            appModel.rejectFileChanges(ids: ids)
+            selectedFileChangeIDs.subtract(ids)
+        } else {
+            pendingConfirmation = .reject(ids: ids)
+        }
+    }
+
+    private func uniquePendingItems(_ ids: [Int64]) -> [ReviewChangeItem] {
+        var seen = Set<Int64>()
+        return ids.compactMap { id in
+            guard !seen.contains(id), let item = visibleItems.first(where: { $0.id == id }), item.pending else {
+                return nil
             }
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            seen.insert(id)
+            return item
         }
-        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func selectGroup(_ group: ReviewTaskGroup) {
+        selectedGroupID = group.id
+        selectedFileChangeID = nil
+        expandedGroupIDs.insert(group.id)
+    }
+
+    private func selectFile(_ item: ReviewChangeItem, group: ReviewTaskGroup) {
+        selectedGroupID = group.id
+        selectedFileChangeID = item.id
+        expandedGroupIDs.insert(group.id)
+    }
+
+    private func toggleExpanded(_ id: String) {
+        if expandedGroupIDs.contains(id) {
+            expandedGroupIDs.remove(id)
+        } else {
+            expandedGroupIDs.insert(id)
+        }
+    }
+
+    private func toggleFileSelection(_ id: Int64) {
+        if selectedFileChangeIDs.contains(id) {
+            selectedFileChangeIDs.remove(id)
+        } else {
+            selectedFileChangeIDs.insert(id)
+        }
+    }
+
+    private func selectVisiblePending() {
+        selectedFileChangeIDs = Set(visibleItems.filter(\.pending).map(\.id))
+    }
+
+    private func group(containing fileChangeID: Int64) -> ReviewTaskGroup? {
+        visibleGroups.first { group in
+            group.items.contains { $0.id == fileChangeID }
+        }
+    }
+
+    private func openSession(_ sessionID: Int64?) {
+        guard let sessionID else { return }
+        appModel.selectedSection = .sessions
+        appModel.selectSession(id: sessionID)
+    }
+
+    private func sendFinishedVisibleUpdates() {
+        appModel.sendLeadUpdates(for: visibleGroups, finishedOnly: true)
+    }
+
+    private func refreshChanges() {
+        appModel.refreshSnapshot()
+        keepSelectionValid()
+    }
+
+    private func keepSelectionValid() {
+        let visibleIDs = Set(visibleItems.map(\.id))
+        selectedFileChangeIDs = selectedFileChangeIDs.intersection(visibleIDs)
+
+        if let selectedFileChangeID, !visibleIDs.contains(selectedFileChangeID) {
+            self.selectedFileChangeID = nil
+        }
+
+        if let selectedGroupID, visibleGroups.contains(where: { $0.id == selectedGroupID }) {
+            return
+        }
+        selectedGroupID = visibleGroups.first?.id
+        if let selectedGroupID {
+            expandedGroupIDs.insert(selectedGroupID)
+        }
     }
 }
 
-private enum ChangeApprovalConfirmation: Identifiable {
-    case file([ChangePreflightIssue])
-    case session([ChangePreflightIssue])
+private enum ReviewActionConfirmation: Identifiable {
+    case approve(ids: [Int64], warnings: [ChangePreflightIssue])
+    case reject(ids: [Int64])
 
     var id: String {
         switch self {
-        case .file:
-            return "file"
-        case .session:
-            return "session"
+        case .approve(let ids, _):
+            "approve-\(ids.map(String.init).joined(separator: "-"))"
+        case .reject(let ids):
+            "reject-\(ids.map(String.init).joined(separator: "-"))"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .approve:
+            "Approve With Warnings?"
+        case .reject:
+            "Reject Selected Changes?"
         }
     }
 
     var buttonTitle: String {
         switch self {
-        case .file:
-            return "Approve File"
-        case .session:
-            return "Apply Pending Changes"
+        case .approve(let ids, _):
+            ids.count == 1 ? "Approve File" : "Approve \(ids.count) Files"
+        case .reject(let ids):
+            ids.count == 1 ? "Reject File" : "Reject \(ids.count) Files"
+        }
+    }
+
+    var buttonRole: ButtonRole? {
+        switch self {
+        case .approve:
+            nil
+        case .reject:
+            .destructive
         }
     }
 
     var message: String {
-        let issues: [ChangePreflightIssue]
         switch self {
-        case .file(let values), .session(let values):
-            issues = values
+        case .approve(_, let warnings):
+            let details = warnings.prefix(4).map(\.title).joined(separator: ", ")
+            return details.isEmpty ? "Review the warning before continuing." : "Warnings: \(details)."
+        case .reject(let ids):
+            return "Reject \(ids.count) pending file change\(ids.count == 1 ? "" : "s"). This only rejects proposals; it does not edit files on disk."
         }
-        let details = issues.prefix(3).map(\.title).joined(separator: ", ")
-        return details.isEmpty ? "Review the warning before continuing." : "Warnings: \(details)."
+    }
+}
+
+private struct ReviewFacetButton: View {
+    let title: String
+    let subtitle: String?
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption)
+                        .lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                Text(count.formatted())
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ReviewSyncPill: View {
+    let state: ReviewLeadSyncState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: state.systemImage)
+                .font(.caption2)
+            Text(state.title)
+                .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.11))
+        .clipShape(Capsule())
+    }
+
+    private var color: Color {
+        switch state {
+        case .notApplicable:
+            .secondary
+        case .waitingForReview:
+            .orange
+        case .needsLeadSync:
+            .blue
+        case .sent:
+            .green
+        case .changedSinceSent:
+            .yellow
+        }
     }
 }
 
@@ -690,15 +1179,9 @@ private struct ChangePreflightBanner: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(color)
 
-                if result.canApprove {
-                    Text(result.hasWarnings ? "Review warnings before applying." : "Disk content still matches the proposal base.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Resolve blocked checks before applying this proposal.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text(result.canApprove ? approveText : "Resolve blocked checks before applying this proposal.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             ForEach(result.issues) { issue in
@@ -727,29 +1210,33 @@ private struct ChangePreflightBanner: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    private var approveText: String {
+        result.hasWarnings ? "Review warnings before applying." : "Disk content still matches the proposal base."
+    }
+
     private var color: Color {
         switch result.status {
         case .ready:
-            return .green
+            .green
         case .warning:
-            return .yellow
+            .yellow
         case .blocked:
-            return .red
+            .red
         case .resolved:
-            return .secondary
+            .secondary
         }
     }
 
     private var symbol: String {
         switch result.status {
         case .ready:
-            return "checkmark.shield"
+            "checkmark.shield"
         case .warning:
-            return "exclamationmark.triangle"
+            "exclamationmark.triangle"
         case .blocked:
-            return "xmark.octagon"
+            "xmark.octagon"
         case .resolved:
-            return "checkmark.circle"
+            "checkmark.circle"
         }
     }
 }
@@ -774,26 +1261,26 @@ private struct ChangePreflightPill: View {
     private var color: Color {
         switch result.status {
         case .ready:
-            return .green
+            .green
         case .warning:
-            return .yellow
+            .yellow
         case .blocked:
-            return .red
+            .red
         case .resolved:
-            return .secondary
+            .secondary
         }
     }
 
     private var symbol: String {
         switch result.status {
         case .ready:
-            return "checkmark.shield"
+            "checkmark.shield"
         case .warning:
-            return "exclamationmark.triangle"
+            "exclamationmark.triangle"
         case .blocked:
-            return "xmark.octagon"
+            "xmark.octagon"
         case .resolved:
-            return "checkmark.circle"
+            "checkmark.circle"
         }
     }
 }
@@ -851,30 +1338,30 @@ private enum DiffLineKind {
     var foreground: Color {
         switch self {
         case .added:
-            return .green
+            .green
         case .removed:
-            return .red
+            .red
         case .hunk:
-            return .blue
+            .blue
         case .fileHeader:
-            return .secondary
+            .secondary
         case .context:
-            return .primary
+            .primary
         }
     }
 
     var background: Color {
         switch self {
         case .added:
-            return Color.green.opacity(0.09)
+            Color.green.opacity(0.09)
         case .removed:
-            return Color.red.opacity(0.08)
+            Color.red.opacity(0.08)
         case .hunk:
-            return Color.blue.opacity(0.08)
+            Color.blue.opacity(0.08)
         case .fileHeader:
-            return Color(nsColor: .controlBackgroundColor)
+            Color(nsColor: .controlBackgroundColor)
         case .context:
-            return Color.clear
+            Color.clear
         }
     }
 }
@@ -885,15 +1372,15 @@ private struct ChangeStatusPill: View {
     private var color: Color {
         switch text.uppercased() {
         case "PENDING":
-            return .orange
+            .orange
         case "APPLIED":
-            return .green
+            .green
         case "REJECTED":
-            return .secondary
+            .secondary
         case "MIXED":
-            return .blue
+            .blue
         default:
-            return .secondary
+            .secondary
         }
     }
 
@@ -913,7 +1400,7 @@ private struct ChangeStatusPill: View {
     }
 }
 
-private struct ChangeCountPill: View {
+private struct ReviewCountPill: View {
     let text: String
     let color: Color
 
@@ -925,6 +1412,7 @@ private struct ChangeCountPill: View {
             Text(text)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)

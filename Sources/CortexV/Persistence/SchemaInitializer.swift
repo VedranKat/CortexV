@@ -122,6 +122,21 @@ struct SchemaInitializer {
         if addedBaseContentExists {
             try migrateLegacyFileChangeBaseContentFlags()
         }
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS review_context_handoffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_session_id INTEGER NOT NULL,
+                target_session_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                sent_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """)
+        try database.execute("""
+            CREATE INDEX IF NOT EXISTS idx_review_context_handoffs_source_target
+            ON review_context_handoffs (source_session_id, target_session_id, created_at DESC)
+            """)
     }
 
     @discardableResult

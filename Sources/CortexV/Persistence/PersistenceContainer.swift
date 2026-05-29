@@ -9,6 +9,7 @@ struct PersistenceContainer {
     let toolCalls: ToolCallRepository
     let changeSets: ChangeSetRepository
     let fileChanges: FileChangeRepository
+    let reviewContextHandoffs: ReviewContextHandoffRepository
 
     init(database: SQLiteDatabase = SQLiteDatabase()) throws {
         self.database = database
@@ -20,5 +21,6 @@ struct PersistenceContainer {
         self.toolCalls = ToolCallRepository(database: database)
         self.changeSets = ChangeSetRepository(database: database)
         self.fileChanges = FileChangeRepository(database: database)
+        self.reviewContextHandoffs = ReviewContextHandoffRepository(database: database)
     }
 }

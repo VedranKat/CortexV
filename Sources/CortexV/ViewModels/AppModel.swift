@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published var fileChanges: [FileChange] = []
     @Published var allChangeSets: [ChangeSet] = []
     @Published var allFileChanges: [FileChange] = []
+    @Published var reviewContextHandoffs: [ReviewContextHandoff] = []
     @Published var changeSetsByID: [Int64: ChangeSet] = [:]
     @Published var preflightResultsByFileChangeID: [Int64: ChangePreflightResult] = [:]
     @Published var selectedRunMap: OrchestrationRunMap?
@@ -256,6 +257,7 @@ final class AppModel: ObservableObject {
             fileChanges = []
             allChangeSets = []
             allFileChanges = []
+            reviewContextHandoffs = []
             changeSetsByID = [:]
             selectedRunMap = nil
             preflightResultsByFileChangeID = [:]
@@ -386,6 +388,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func approveFileChanges(ids: [Int64]) {
+        guard let persistence else { return }
+        do {
+            let approved = try makeChangeReviewService(persistence: persistence).approveFileChanges(ids)
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            statusText = "Applied \(approved.count) selected file change\(approved.count == 1 ? "" : "s")."
+        } catch {
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            statusText = error.localizedDescription
+        }
+    }
+
     func rejectFileChange(id: Int64) {
         guard let persistence else { return }
         do {
@@ -398,6 +414,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func rejectFileChanges(ids: [Int64]) {
+        guard let persistence else { return }
+        do {
+            let rejected = try makeChangeReviewService(persistence: persistence).rejectFileChanges(ids)
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            statusText = "Rejected \(rejected.count) selected file change\(rejected.count == 1 ? "" : "s")."
+        } catch {
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            statusText = error.localizedDescription
+        }
+    }
+
     func rejectPendingChanges(sessionID: Int64) {
         guard let persistence else { return }
         do {
@@ -406,6 +436,59 @@ final class AppModel: ObservableObject {
             reloadSelectedSessionDetails()
             statusText = "Rejected \(rejected.count) pending file change\(rejected.count == 1 ? "" : "s")."
         } catch {
+            statusText = error.localizedDescription
+        }
+    }
+
+    func sendLeadUpdate(for group: ReviewTaskGroup, allowDuplicate: Bool = false) {
+        guard let persistence else { return }
+        do {
+            let result = try ReviewContextService(persistence: persistence)
+                .sendLeadUpdate(for: group, allowDuplicate: allowDuplicate)
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            switch result.status {
+            case .sent:
+                statusText = "Sent review context from session #\(result.sourceSessionID) to lead session #\(result.targetSessionID)."
+            case .skippedDuplicate:
+                statusText = "Lead session #\(result.targetSessionID) already has the latest review context for session #\(result.sourceSessionID)."
+            }
+        } catch {
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            statusText = error.localizedDescription
+        }
+    }
+
+    func sendLeadUpdates(for groups: [ReviewTaskGroup], finishedOnly: Bool) {
+        guard let persistence else { return }
+        let candidates = groups.filter { group in
+            let canSend = finishedOnly ? group.canSendFinishedLeadContext : group.canSendLeadContext
+            return canSend && group.syncState != .sent
+        }
+        guard !candidates.isEmpty else {
+            statusText = finishedOnly ? "No finished review tasks need lead context." : "No review tasks can send lead context."
+            return
+        }
+        do {
+            let service = ReviewContextService(persistence: persistence)
+            var sentCount = 0
+            var skippedCount = 0
+            for group in candidates {
+                let result = try service.sendLeadUpdate(for: group)
+                switch result.status {
+                case .sent:
+                    sentCount += 1
+                case .skippedDuplicate:
+                    skippedCount += 1
+                }
+            }
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
+            statusText = "Sent \(sentCount) lead update\(sentCount == 1 ? "" : "s"); skipped \(skippedCount) duplicate\(skippedCount == 1 ? "" : "s")."
+        } catch {
+            refreshAll(using: persistence)
+            reloadSelectedSessionDetails()
             statusText = error.localizedDescription
         }
     }
@@ -507,6 +590,7 @@ final class AppModel: ObservableObject {
             workspaces = try persistence.workspaces.findAll()
             allChangeSets = loadedChangeSets
             allFileChanges = loadedFileChanges
+            reviewContextHandoffs = try persistence.reviewContextHandoffs.findAll()
             preflightResultsByFileChangeID = try makePreflightService(persistence: persistence).preflight(loadedFileChanges)
 
             var workspaceMap: [Int64: Set<Int64>] = [:]

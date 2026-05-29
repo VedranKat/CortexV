@@ -155,6 +155,7 @@ struct AgentRepository {
         try database.transaction { transaction in
             try transaction.execute("DELETE FROM agent_orchestration_members WHERE lead_agent_id = ? OR child_agent_id = ?", values: [.int(id), .int(id)])
             for sessionID in sessionIDs {
+                try transaction.execute("DELETE FROM review_context_handoffs WHERE source_session_id = ? OR target_session_id = ?", values: [.int(sessionID), .int(sessionID)])
                 try transaction.execute("DELETE FROM file_changes WHERE change_set_id IN (SELECT id FROM change_sets WHERE session_id = ?)", values: [.int(sessionID)])
                 try transaction.execute("DELETE FROM change_sets WHERE session_id = ?", values: [.int(sessionID)])
                 try transaction.execute("DELETE FROM tool_calls WHERE session_id = ?", values: [.int(sessionID)])

@@ -207,4 +207,16 @@ struct FileChange: Identifiable, Equatable {
     var status: String
 
     var pending: Bool { status.caseInsensitiveCompare("PENDING") == .orderedSame }
+    var applied: Bool { status.caseInsensitiveCompare("APPLIED") == .orderedSame }
+    var rejected: Bool { status.caseInsensitiveCompare("REJECTED") == .orderedSame }
+}
+
+struct ReviewContextHandoff: Identifiable, Equatable {
+    var id: Int64
+    var sourceSessionID: Int64
+    var targetSessionID: Int64
+    var status: String
+    var payloadHash: String
+    var sentAt: Date?
+    var createdAt: Date
 }

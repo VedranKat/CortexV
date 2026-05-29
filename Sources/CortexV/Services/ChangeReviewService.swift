@@ -50,7 +50,28 @@ struct ChangeReviewService {
 
     func approvePendingFileChanges(sessionID: Int64) throws -> [FileChange] {
         let pending = try persistence.fileChanges.findBySessionID(sessionID).filter(\.pending)
-        let preflightResults = try makePreflightService().preflight(pending)
+        return try approvePreflightedBatch(pending)
+    }
+
+    func approveFileChanges(_ fileChangeIDs: [Int64]) throws -> [FileChange] {
+        let pending = try uniqueIDs(fileChangeIDs)
+            .map { try persistence.fileChanges.find(id: $0) }
+            .filter(\.pending)
+        return try approvePreflightedBatch(pending)
+    }
+
+    func rejectFileChanges(_ fileChangeIDs: [Int64]) throws -> [FileChange] {
+        let pending = try uniqueIDs(fileChangeIDs)
+            .map { try persistence.fileChanges.find(id: $0) }
+            .filter(\.pending)
+        return try pending.map { try rejectFileChange($0.id) }
+    }
+
+    private func approvePreflightedBatch(_ pending: [FileChange]) throws -> [FileChange] {
+        let preflightService = makePreflightService()
+        let preflightResults = Dictionary(uniqueKeysWithValues: try pending.map { fileChange in
+            (fileChange.id, try preflightService.preflight(fileChange))
+        })
         let blocked = preflightResults.values.filter { !$0.canApprove }
         guard blocked.isEmpty else {
             let paths = blocked
@@ -169,6 +190,16 @@ struct ChangeReviewService {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\\", with: "/")
         guard !normalized.isEmpty else { throw ToolExecutionError.message("Missing required argument '\(fieldName)'.") }
         return normalized
+    }
+
+    private func uniqueIDs(_ ids: [Int64]) -> [Int64] {
+        var seen = Set<Int64>()
+        var result: [Int64] = []
+        for id in ids where !seen.contains(id) {
+            seen.insert(id)
+            result.append(id)
+        }
+        return result
     }
 }
 
