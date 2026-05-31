@@ -34,11 +34,11 @@ final class ReviewWorkbenchTests: XCTestCase {
 
         var filters = ReviewFilters()
         filters.workspaceID = fixture.workspace.id
-        filters.role = .worker
+        filters.agentID = fixture.workerSession.agentID
         filters.searchText = "feature"
         XCTAssertEqual(snapshot.filteredGroups(using: filters).map(\.id), [group.id])
 
-        filters.role = .reviewer
+        filters.agentID = fixture.leadSession.agentID
         XCTAssertTrue(snapshot.filteredGroups(using: filters).isEmpty)
     }
 

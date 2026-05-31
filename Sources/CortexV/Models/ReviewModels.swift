@@ -91,7 +91,6 @@ struct ReviewFilters: Equatable {
     var workspaceID: Int64?
     var rootSessionID: Int64?
     var sessionID: Int64?
-    var role: OrchestrationRole?
     var agentID: Int64?
     var searchText: String = ""
 
@@ -102,7 +101,6 @@ struct ReviewFilters: Equatable {
             || workspaceID != nil
             || rootSessionID != nil
             || sessionID != nil
-            || role != nil
             || agentID != nil
             || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -117,14 +115,6 @@ struct ReviewFacetOption: Identifiable, Equatable {
     let title: String
     let subtitle: String?
     let count: Int
-}
-
-struct ReviewRoleFacetOption: Identifiable, Equatable {
-    let role: OrchestrationRole
-    let count: Int
-
-    var id: String { role.rawValue }
-    var title: String { role.title }
 }
 
 struct ReviewQueueSummary: Equatable {
@@ -250,7 +240,6 @@ struct ReviewProjectionSnapshot: Equatable {
     let leadFacets: [ReviewFacetOption]
     let sessionFacets: [ReviewFacetOption]
     let agentFacets: [ReviewFacetOption]
-    let roleFacets: [ReviewRoleFacetOption]
 
     func filteredGroups(using filters: ReviewFilters) -> [ReviewTaskGroup] {
         let searchTerms = filters.searchText
@@ -266,7 +255,6 @@ struct ReviewProjectionSnapshot: Equatable {
                 && filters.workspaceID.map { group.workspaceID == $0 } ?? true
                 && filters.rootSessionID.map { group.rootSessionID == $0 } ?? true
                 && filters.sessionID.map { group.sessionID == $0 } ?? true
-                && filters.role.map { group.role == $0 } ?? true
                 && filters.agentID.map { group.agentID == $0 } ?? true
                 && searchTerms.allSatisfy { group.searchBlob.contains($0) }
         }
@@ -425,8 +413,7 @@ enum ReviewProjection {
                 id: \.agentID,
                 title: \.agentName,
                 subtitle: { _ in nil }
-            ),
-            roleFacets: roleFacets(groups: groups)
+            )
         )
     }
 
@@ -530,14 +517,6 @@ enum ReviewProjection {
             }
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
         }
-    }
-
-    private static func roleFacets(groups: [ReviewTaskGroup]) -> [ReviewRoleFacetOption] {
-        Dictionary(grouping: groups.compactMap(\.role)) { $0 }
-            .map { role, values in ReviewRoleFacetOption(role: role, count: values.count) }
-            .sorted { lhs, rhs in
-                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            }
     }
 
     private static func sourceTargetKey(sourceSessionID: Int64?, targetSessionID: Int64?) -> String {

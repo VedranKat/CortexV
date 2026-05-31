@@ -25,6 +25,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$SCRATCH_PATH/$CONFIGURATION/CortexV" "$MACOS_DIR/CortexV"
 cp "$ROOT_DIR/Packaging/Info.plist" "$CONTENTS_DIR/Info.plist"
+cp "$ROOT_DIR/Packaging/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 printf "APPL????" > "$CONTENTS_DIR/PkgInfo"
 
 codesign \

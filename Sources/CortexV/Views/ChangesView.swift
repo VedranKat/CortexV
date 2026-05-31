@@ -127,165 +127,139 @@ struct ChangesView: View {
 
             TextField("Search files, sessions, agents", text: $filters.searchText)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 260)
-
-            if filters.hasActiveFacets {
-                Button {
-                    filters.reset()
-                } label: {
-                    Label("Clear Filters", systemImage: "xmark.circle")
-                }
-            }
+                .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
         }
         .padding(16)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func workbench(width: CGFloat) -> some View {
-        Group {
-            if width < 1060 {
-                VStack(spacing: 0) {
-                    compactFilterBar
-                    Divider()
-                    HStack(spacing: 0) {
-                        reviewQueue
-                            .frame(width: min(max(360, width * 0.42), 470))
-                        Divider()
-                        detailPane
-                    }
-                }
-            } else {
-                HStack(spacing: 0) {
-                    filterRail
-                        .frame(width: 258)
-                    Divider()
-                    reviewQueue
-                        .frame(width: min(max(390, width * 0.34), 510))
-                    Divider()
-                    detailPane
-                }
+        VStack(spacing: 0) {
+            filterBar
+            Divider()
+            HStack(spacing: 0) {
+                reviewQueue
+                    .frame(width: min(max(360, width * 0.36), 520))
+                Divider()
+                detailPane
             }
         }
     }
 
-    private var filterRail: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                filterPickerSection(title: "Status") {
-                    Picker("Status", selection: $filters.status) {
-                        ForEach(ReviewStatusFilter.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                statusFilterMenu
+                safetyFilterMenu
+                syncFilterMenu
 
-                filterPickerSection(title: "Safety") {
-                    Picker("Safety", selection: $filters.safety) {
-                        ForEach(ReviewSafetyFilter.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
+                Divider()
+                    .frame(height: 20)
 
-                filterPickerSection(title: "Lead Sync") {
-                    Picker("Lead Sync", selection: $filters.sync) {
-                        ForEach(ReviewSyncFilter.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                facetSection(
-                    title: "Projects",
+                facetFilterMenu(
+                    title: "Project",
+                    systemImage: "folder",
                     allTitle: "All Projects",
                     selectedID: filters.workspaceID,
                     options: projection.workspaceFacets
                 ) { filters.workspaceID = $0 }
 
-                facetSection(
-                    title: "Leads",
+                facetFilterMenu(
+                    title: "Lead",
+                    systemImage: "person.2.wave.2",
                     allTitle: "All Leads",
                     selectedID: filters.rootSessionID,
                     options: projection.leadFacets
                 ) { filters.rootSessionID = $0 }
 
-                roleFacetSection
-
-                facetSection(
-                    title: "Agents",
+                facetFilterMenu(
+                    title: "Agent",
+                    systemImage: "cpu",
                     allTitle: "All Agents",
                     selectedID: filters.agentID,
                     options: projection.agentFacets
                 ) { filters.agentID = $0 }
 
-                facetSection(
-                    title: "Sessions",
+                facetFilterMenu(
+                    title: "Session",
+                    systemImage: "message",
                     allTitle: "All Sessions",
                     selectedID: filters.sessionID,
                     options: projection.sessionFacets
                 ) { filters.sessionID = $0 }
+
+                if filters.hasActiveFacets {
+                    Button {
+                        filters.reset()
+                    } label: {
+                        Label("Clear Filters", systemImage: "xmark.circle.fill")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Clear filters")
+                }
             }
-            .padding(12)
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private var compactFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                Picker("Status", selection: $filters.status) {
-                    ForEach(ReviewStatusFilter.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 300)
-
-                Picker("Safety", selection: $filters.safety) {
-                    ForEach(ReviewSafetyFilter.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 300)
-
-                filterMenu(
-                    title: filters.workspaceID.flatMap { selectedFacetTitle(id: $0, options: projection.workspaceFacets) } ?? "Projects",
-                    allTitle: "All Projects",
-                    selectedID: filters.workspaceID,
-                    options: projection.workspaceFacets
-                ) { filters.workspaceID = $0 }
-
-                filterMenu(
-                    title: filters.rootSessionID.flatMap { selectedFacetTitle(id: $0, options: projection.leadFacets) } ?? "Leads",
-                    allTitle: "All Leads",
-                    selectedID: filters.rootSessionID,
-                    options: projection.leadFacets
-                ) { filters.rootSessionID = $0 }
-
-                Menu(filters.role?.title ?? "Roles") {
-                    Button("All Roles") { filters.role = nil }
-                    ForEach(projection.roleFacets) { option in
-                        Button("\(option.title) (\(option.count))") {
-                            filters.role = option.role
-                        }
-                    }
-                }
-
-                filterMenu(
-                    title: filters.agentID.flatMap { selectedFacetTitle(id: $0, options: projection.agentFacets) } ?? "Agents",
-                    allTitle: "All Agents",
-                    selectedID: filters.agentID,
-                    options: projection.agentFacets
-                ) { filters.agentID = $0 }
-            }
+            .controlSize(.small)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var statusFilterMenu: some View {
+        Menu {
+            ForEach(ReviewStatusFilter.allCases) { option in
+                Button {
+                    filters.status = option
+                } label: {
+                    filterMenuOptionLabel(option.title, isSelected: filters.status == option)
+                }
+            }
+        } label: {
+            ReviewFilterMenuLabel(
+                title: "Status: \(filters.status.title)",
+                systemImage: "line.3.horizontal.decrease.circle",
+                isActive: filters.status != .pending
+            )
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var safetyFilterMenu: some View {
+        Menu {
+            ForEach(ReviewSafetyFilter.allCases) { option in
+                Button {
+                    filters.safety = option
+                } label: {
+                    filterMenuOptionLabel(option.title, isSelected: filters.safety == option)
+                }
+            }
+        } label: {
+            ReviewFilterMenuLabel(
+                title: "Safety: \(filters.safety.title)",
+                systemImage: "checkmark.shield",
+                isActive: filters.safety != .all
+            )
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var syncFilterMenu: some View {
+        Menu {
+            ForEach(ReviewSyncFilter.allCases) { option in
+                Button {
+                    filters.sync = option
+                } label: {
+                    filterMenuOptionLabel(option.title, isSelected: filters.sync == option)
+                }
+            }
+        } label: {
+            ReviewFilterMenuLabel(
+                title: "Lead Sync: \(filters.sync.title)",
+                systemImage: "arrow.up.message",
+                isActive: filters.sync != .all
+            )
+        }
+        .buttonStyle(.bordered)
     }
 
     private var reviewQueue: some View {
@@ -408,92 +382,62 @@ struct ChangesView: View {
         .background(Color(nsColor: .textBackgroundColor))
     }
 
-    private func filterPickerSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            content()
-        }
-    }
-
-    private func facetSection(
+    private func facetFilterMenu(
         title: String,
+        systemImage: String,
         allTitle: String,
         selectedID: Int64?,
         options: [ReviewFacetOption],
         onSelect: @escaping (Int64?) -> Void
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            ReviewFacetButton(
-                title: allTitle,
-                subtitle: nil,
-                count: options.reduce(0) { $0 + $1.count },
-                isSelected: selectedID == nil
-            ) {
+        let selectedTitle = selectedID.flatMap { selectedFacetTitle(id: $0, options: options) }
+        let optionCount = options.reduce(0) { $0 + $1.count }
+        return Menu {
+            Button {
                 onSelect(nil)
+            } label: {
+                filterMenuOptionLabel(
+                    "\(allTitle) (\(optionCount.formatted()))",
+                    isSelected: selectedID == nil
+                )
+            }
+
+            if !options.isEmpty {
+                Divider()
             }
 
             ForEach(options) { option in
-                ReviewFacetButton(
-                    title: option.title,
-                    subtitle: option.subtitle,
-                    count: option.count,
-                    isSelected: selectedID == option.id
-                ) {
+                Button {
                     onSelect(option.id)
+                } label: {
+                    filterMenuOptionLabel(
+                        facetMenuTitle(for: option),
+                        isSelected: selectedID == option.id
+                    )
                 }
             }
+        } label: {
+            ReviewFilterMenuLabel(
+                title: selectedTitle.map { "\(title): \($0)" } ?? title,
+                systemImage: systemImage,
+                isActive: selectedID != nil
+            )
+        }
+        .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder
+    private func filterMenuOptionLabel(_ title: String, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
         }
     }
 
-    private var roleFacetSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Roles")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            ReviewFacetButton(
-                title: "All Roles",
-                subtitle: nil,
-                count: projection.roleFacets.reduce(0) { $0 + $1.count },
-                isSelected: filters.role == nil
-            ) {
-                filters.role = nil
-            }
-
-            ForEach(projection.roleFacets) { option in
-                ReviewFacetButton(
-                    title: option.title,
-                    subtitle: nil,
-                    count: option.count,
-                    isSelected: filters.role == option.role
-                ) {
-                    filters.role = option.role
-                }
-            }
-        }
-    }
-
-    private func filterMenu(
-        title: String,
-        allTitle: String,
-        selectedID: Int64?,
-        options: [ReviewFacetOption],
-        onSelect: @escaping (Int64?) -> Void
-    ) -> some View {
-        Menu(title) {
-            Button(allTitle) { onSelect(nil) }
-            ForEach(options) { option in
-                Button("\(option.title) (\(option.count))") {
-                    onSelect(option.id)
-                }
-            }
-        }
+    private func facetMenuTitle(for option: ReviewFacetOption) -> String {
+        let subtitle = option.subtitle.map { " - \($0)" } ?? ""
+        return "\(option.title)\(subtitle) (\(option.count.formatted()))"
     }
 
     private func selectedFacetTitle(id: Int64, options: [ReviewFacetOption]) -> String? {
@@ -1099,40 +1043,21 @@ private enum ReviewActionConfirmation: Identifiable {
     }
 }
 
-private struct ReviewFacetButton: View {
+private struct ReviewFilterMenuLabel: View {
     let title: String
-    let subtitle: String?
-    let count: Int
-    let isSelected: Bool
-    let action: () -> Void
+    let systemImage: String
+    let isActive: Bool
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.caption)
-                        .lineLimit(1)
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 8)
-                Text(count.formatted())
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
+        Label {
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: 190)
     }
 }
 
