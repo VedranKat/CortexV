@@ -500,7 +500,7 @@ private struct AgentHubView: View {
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private func tint(for template: AgentTemplate) -> Color {
@@ -548,6 +548,19 @@ private struct AgentHubTile: View {
 
     private var hasMenu: Bool {
         onEdit != nil || onPush != nil || onDelete != nil
+    }
+
+    private var statusItems: [AgentTileStatusItem] {
+        var items: [AgentTileStatusItem] = [
+            AgentTileStatusItem(text: statusText, systemImage: "key", tint: statusText == "Missing key" ? .orange : .secondary)
+        ]
+        if warningCount > 0 {
+            items.append(AgentTileStatusItem(text: "\(warningCount) warning\(warningCount == 1 ? "" : "s")", systemImage: "exclamationmark.triangle.fill", tint: .orange))
+        }
+        if overrideCount > 0 {
+            items.append(AgentTileStatusItem(text: "\(overrideCount) override\(overrideCount == 1 ? "" : "s")", systemImage: "slider.horizontal.3", tint: .orange))
+        }
+        return items
     }
 
     var body: some View {
@@ -614,18 +627,14 @@ private struct AgentHubTile: View {
             }
 
             HStack(spacing: 8) {
-                AgentStatusChip(text: statusText, systemImage: "key", tint: statusText == "Missing key" ? .orange : .secondary)
-                AgentStatusChip(text: warningCount > 0 ? "\(warningCount) warning\(warningCount == 1 ? "" : "s")" : "Clean", systemImage: warningCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle", tint: warningCount > 0 ? .orange : .secondary)
+                ForEach(statusItems) { item in
+                    AgentStatusChip(text: item.text, systemImage: item.systemImage, tint: item.tint)
+                }
+                Spacer()
             }
 
             HStack(spacing: 7) {
-                if overrideCount > 0 {
-                    Label("\(overrideCount) override\(overrideCount == 1 ? "" : "s")", systemImage: "slider.horizontal.3")
-                        .foregroundStyle(.orange)
-                }
-
                 Spacer()
-
                 if let updatedText {
                     Label(updatedText, systemImage: "clock")
                         .foregroundStyle(.tertiary)
@@ -649,6 +658,14 @@ private struct AgentHubTile: View {
         .onHover { isHovering = $0 }
         .accessibilityAddTraits(.isButton)
     }
+}
+
+private struct AgentTileStatusItem: Identifiable {
+    let text: String
+    let systemImage: String
+    let tint: Color
+
+    var id: String { "\(systemImage)-\(text)" }
 }
 
 private struct AgentCreateTemplateTile: View {
@@ -868,7 +885,7 @@ private struct AgentWorkspaceHeader: View {
             .help("Back")
             .buttonStyle(.borderless)
             .frame(width: 30, height: 30)
-            .background(Color.primary.opacity(0.06))
+            .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
@@ -921,9 +938,9 @@ private struct AgentWorkspaceHeader: View {
             }
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .background(.regularMaterial)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.72))
+        .padding(.top, 18)
+        .padding(.bottom, 14)
+        .background(Color(nsColor: .textBackgroundColor))
     }
 }
 
