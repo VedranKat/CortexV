@@ -7,6 +7,7 @@ final class AppModel: ObservableObject {
     @Published var statusText = "Ready"
     @Published var pendingCommand: AppCommand?
     @Published var agents: [Agent] = []
+    @Published var agentTemplates: [AgentTemplate] = []
     @Published var workspaces: [Workspace] = []
     @Published var sessions: [Session] = []
     @Published var agentWorkspaceIDs: [Int64: Set<Int64>] = [:]
@@ -69,8 +70,11 @@ final class AppModel: ObservableObject {
         refreshAll(using: persistence)
     }
 
-    func agentDraft(for agent: Agent? = nil) -> AgentDraft {
+    func agentDraft(for agent: Agent? = nil, template: AgentTemplate? = nil) -> AgentDraft {
         guard let agent, let persistence else {
+            if let template {
+                return .new(template: template)
+            }
             return .new()
         }
         do {
@@ -83,6 +87,21 @@ final class AppModel: ObservableObject {
             statusText = error.localizedDescription
             return AgentDraft(agent: agent, workspaceIDs: [], orchestrationMembers: [])
         }
+    }
+
+    func agentTemplateDraft(for template: AgentTemplate? = nil) -> AgentTemplateDraft {
+        template.map(AgentTemplateDraft.init(template:)) ?? .new()
+    }
+
+    func agentTemplateDraft(from agent: Agent) -> AgentTemplateDraft {
+        AgentTemplateDraft(agent: agent)
+    }
+
+    func agentTemplatePropagationDraft(for template: AgentTemplate) -> AgentTemplatePropagationDraft {
+        let linkedAgentIDs = agents
+            .filter { $0.templateID == template.id }
+            .map(\.id)
+        return .new(templateID: template.id, candidateAgentIDs: linkedAgentIDs)
     }
 
     func workspaceDraft(for workspace: Workspace? = nil) -> WorkspaceDraft {
@@ -108,6 +127,7 @@ final class AppModel: ObservableObject {
                     temperature: clampedTemperature(draft.temperature),
                     status: draft.status,
                     kind: draft.kind,
+                    templateID: draft.templateID,
                     createdAt: existing.createdAt,
                     updatedAt: existing.updatedAt
                 ))
@@ -121,7 +141,8 @@ final class AppModel: ObservableObject {
                     systemPrompt: normalizePrompt(draft.systemPrompt, kind: draft.kind),
                     temperature: clampedTemperature(draft.temperature),
                     status: draft.status,
-                    kind: draft.kind
+                    kind: draft.kind,
+                    templateID: draft.templateID
                 )
             }
             try persistence.agents.replaceWorkspaceBindings(agentID: saved.id, workspaceIDs: Array(draft.workspaceIDs).sorted())
@@ -149,6 +170,102 @@ final class AppModel: ObservableObject {
             statusText = "Deleted agent '\(agent.name)'."
         } catch {
             statusText = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func saveAgentTemplate(_ draft: AgentTemplateDraft) -> Bool {
+        guard let persistence else { return false }
+        do {
+            let saved: AgentTemplate
+            if let id = draft.id {
+                let existing = try persistence.agentTemplates.find(id: id)
+                saved = try persistence.agentTemplates.update(AgentTemplate(
+                    id: id,
+                    name: normalizeName(draft.name, fallback: "Unnamed Template"),
+                    description: normalizeText(draft.description),
+                    baseURL: normalizeText(draft.baseURL),
+                    apiKey: draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    defaultModel: normalizeText(draft.defaultModel),
+                    systemPrompt: normalizePrompt(draft.systemPrompt, kind: draft.kind),
+                    temperature: clampedTemperature(draft.temperature),
+                    kind: draft.kind,
+                    createdAt: existing.createdAt,
+                    updatedAt: existing.updatedAt
+                ))
+            } else {
+                saved = try persistence.agentTemplates.insert(
+                    name: normalizeName(draft.name, fallback: "New Template"),
+                    description: normalizeText(draft.description),
+                    baseURL: normalizeText(draft.baseURL),
+                    apiKey: draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    defaultModel: normalizeText(draft.defaultModel),
+                    systemPrompt: normalizePrompt(draft.systemPrompt, kind: draft.kind),
+                    temperature: clampedTemperature(draft.temperature),
+                    kind: draft.kind
+                )
+            }
+            refreshAll(using: persistence)
+            statusText = "Saved template '\(saved.name)'."
+            return true
+        } catch {
+            statusText = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteAgentTemplate(id: Int64) -> Bool {
+        guard let persistence else { return false }
+        do {
+            let template = try persistence.agentTemplates.find(id: id)
+            let linkedCount = agents.filter { $0.templateID == id }.count
+            try persistence.agentTemplates.deleteDetachingAgents(id: id)
+            refreshAll(using: persistence)
+            statusText = "Deleted template '\(template.name)' and detached \(linkedCount) linked agent\(linkedCount == 1 ? "" : "s")."
+            return true
+        } catch {
+            statusText = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func pushAgentTemplate(_ draft: AgentTemplatePropagationDraft) -> Bool {
+        guard let persistence else { return false }
+        do {
+            let template = try persistence.agentTemplates.find(id: draft.templateID)
+            let appliedCount = try persistence.agentTemplates.apply(
+                template,
+                fields: draft.fields,
+                to: Array(draft.agentIDs).sorted()
+            )
+            refreshAll(using: persistence)
+            statusText = "Pushed template '\(template.name)' to \(appliedCount) agent\(appliedCount == 1 ? "" : "s")."
+            return true
+        } catch {
+            statusText = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func linkAgent(_ agentID: Int64, toTemplate templateID: Int64?) -> Bool {
+        guard let persistence else { return false }
+        do {
+            var agent = try persistence.agents.find(id: agentID)
+            agent.templateID = templateID
+            let saved = try persistence.agents.update(agent)
+            refreshAll(using: persistence)
+            if let templateID, let template = agentTemplates.first(where: { $0.id == templateID }) {
+                statusText = "Linked '\(saved.name)' to template '\(template.name)'."
+            } else {
+                statusText = "Detached '\(saved.name)' from its template."
+            }
+            return true
+        } catch {
+            statusText = error.localizedDescription
+            return false
         }
     }
 
@@ -583,10 +700,12 @@ final class AppModel: ObservableObject {
         do {
             let loadedSessions = try persistence.sessions.findAll()
             let loadedAgents = try persistence.agents.findAll()
+            let loadedTemplates = try persistence.agentTemplates.findAll()
             let loadedChangeSets = try persistence.changeSets.findAll()
             let loadedFileChanges = try persistence.fileChanges.findAll()
             sessions = loadedSessions
             agents = loadedAgents
+            agentTemplates = loadedTemplates
             workspaces = try persistence.workspaces.findAll()
             allChangeSets = loadedChangeSets
             allFileChanges = loadedFileChanges
@@ -721,6 +840,12 @@ final class AppModel: ObservableObject {
     }
 
     private func validateAgentDraft(_ draft: AgentDraft) -> Bool {
+        if let templateID = draft.templateID,
+           !agentTemplates.contains(where: { $0.id == templateID }) {
+            statusText = "The selected template no longer exists."
+            return false
+        }
+
         guard draft.kind == .orchestrator else { return true }
 
         let members = draft.orchestrationMembers

@@ -21,6 +21,24 @@ struct SchemaInitializer {
         try ensureColumn(table: "agents", column: "base_url", definition: "TEXT NOT NULL DEFAULT 'https://api.openai.com/v1'")
         try ensureColumn(table: "agents", column: "api_key", definition: "TEXT NOT NULL DEFAULT ''")
         try ensureColumn(table: "agents", column: "kind", definition: "TEXT NOT NULL DEFAULT 'STANDARD'")
+        try ensureColumn(table: "agents", column: "template_id", definition: "INTEGER")
+
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS agent_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                default_model TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """)
+        try migrateOpenRouterTemplateLinks()
 
         try database.execute("""
             CREATE TABLE IF NOT EXISTS workspaces (
@@ -189,4 +207,113 @@ struct SchemaInitializer {
             try transaction.execute("DROP TABLE agent_orchestration_members_old")
         }
     }
+
+    private func migrateOpenRouterTemplateLinks() throws {
+        let openRouterBaseURL = "https://openrouter.ai/api/v1"
+        let candidates = try database.query("""
+            SELECT id, base_url, api_key, model, system_prompt, temperature, kind
+            FROM agents
+            WHERE template_id IS NULL
+            """) { row in
+            OpenRouterMigrationAgent(
+                id: row.int64(0),
+                baseURL: row.text(1),
+                apiKey: row.text(2),
+                model: row.text(3),
+                systemPrompt: row.text(4),
+                temperature: row.double(5),
+                kind: AgentKind(rawValue: row.text(6)) ?? .standard
+            )
+        }
+        .filter { normalizedBaseURL($0.baseURL) == openRouterBaseURL }
+
+        guard !candidates.isEmpty else { return }
+
+        let templateID = try existingOpenRouterTemplateID() ?? insertOpenRouterTemplate(from: candidates)
+        for candidate in candidates {
+            try database.execute(
+                "UPDATE agents SET template_id = ? WHERE id = ? AND template_id IS NULL",
+                values: [.int(templateID), .int(candidate.id)]
+            )
+        }
+    }
+
+    private func existingOpenRouterTemplateID() throws -> Int64? {
+        try database.query("""
+            SELECT id
+            FROM agent_templates
+            WHERE lower(name) = lower(?)
+            LIMIT 1
+            """, values: [.text("OpenRouter")]) { row in
+            row.int64(0)
+        }
+        .first
+    }
+
+    private func insertOpenRouterTemplate(from candidates: [OpenRouterMigrationAgent]) throws -> Int64 {
+        let now = Date()
+        return try database.insert("""
+            INSERT INTO agent_templates (name, description, base_url, api_key, default_model, system_prompt, temperature, kind, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, values: [
+                .text("OpenRouter"),
+                .text("OpenAI-compatible routing through OpenRouter."),
+                .text("https://openrouter.ai/api/v1"),
+                .text(mostCommonNonEmpty(candidates.map(\.apiKey))),
+                .text(mostCommonNonEmpty(candidates.map(\.model))),
+                .text(mostCommonNonEmpty(candidates.map(\.systemPrompt), fallback: AgentPromptDefaults.standard)),
+                .double(candidates.first?.temperature ?? 0.2),
+                .text(mostCommonKind(candidates).rawValue),
+                .date(now),
+                .date(now)
+            ])
+    }
+
+    private func normalizedBaseURL(_ value: String) -> String {
+        var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private func mostCommonNonEmpty(_ values: [String], fallback: String = "") -> String {
+        let trimmedValues = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !trimmedValues.isEmpty else { return fallback }
+        let grouped = Dictionary(grouping: trimmedValues, by: { $0 })
+        return grouped
+            .sorted {
+                if $0.value.count == $1.value.count {
+                    return $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending
+                }
+                return $0.value.count > $1.value.count
+            }
+            .first?
+            .key ?? fallback
+    }
+
+    private func mostCommonKind(_ candidates: [OpenRouterMigrationAgent]) -> AgentKind {
+        let grouped = Dictionary(grouping: candidates.map(\.kind), by: { $0 })
+        return grouped
+            .sorted {
+                if $0.value.count == $1.value.count {
+                    return $0.key.rawValue < $1.key.rawValue
+                }
+                return $0.value.count > $1.value.count
+            }
+            .first?
+            .key ?? .standard
+    }
+}
+
+private struct OpenRouterMigrationAgent {
+    var id: Int64
+    var baseURL: String
+    var apiKey: String
+    var model: String
+    var systemPrompt: String
+    var temperature: Double
+    var kind: AgentKind
 }

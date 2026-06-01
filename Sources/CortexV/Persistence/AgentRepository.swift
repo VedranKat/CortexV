@@ -5,7 +5,7 @@ struct AgentRepository {
 
     func findAll() throws -> [Agent] {
         try database.query("""
-            SELECT id, name, description, base_url, api_key, model, system_prompt, temperature, status, kind, created_at, updated_at
+            SELECT id, name, description, base_url, api_key, model, system_prompt, temperature, status, kind, template_id, created_at, updated_at
             FROM agents
             ORDER BY updated_at DESC
             """, map: map)
@@ -13,7 +13,7 @@ struct AgentRepository {
 
     func find(id: Int64) throws -> Agent {
         let rows = try database.query("""
-            SELECT id, name, description, base_url, api_key, model, system_prompt, temperature, status, kind, created_at, updated_at
+            SELECT id, name, description, base_url, api_key, model, system_prompt, temperature, status, kind, template_id, created_at, updated_at
             FROM agents
             WHERE id = ?
             """, values: [.int(id)], map: map)
@@ -30,12 +30,13 @@ struct AgentRepository {
         systemPrompt: String,
         temperature: Double,
         status: AgentStatus,
-        kind: AgentKind
+        kind: AgentKind,
+        templateID: Int64? = nil
     ) throws -> Agent {
         let now = Date()
         let id = try database.insert("""
-            INSERT INTO agents (name, description, provider, base_url, api_key, model, system_prompt, temperature, status, kind, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO agents (name, description, provider, base_url, api_key, model, system_prompt, temperature, status, kind, template_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, values: [
                 .text(name),
                 .text(description),
@@ -47,6 +48,7 @@ struct AgentRepository {
                 .double(temperature),
                 .text(status.rawValue),
                 .text(kind.rawValue),
+                templateID.map(SQLiteValue.int) ?? .null,
                 .date(now),
                 .date(now)
             ])
@@ -66,6 +68,7 @@ struct AgentRepository {
                 temperature = ?,
                 status = ?,
                 kind = ?,
+                template_id = ?,
                 updated_at = ?
             WHERE id = ?
             """, values: [
@@ -79,6 +82,7 @@ struct AgentRepository {
                 .double(agent.temperature),
                 .text(agent.status.rawValue),
                 .text(agent.kind.rawValue),
+                agent.templateID.map(SQLiteValue.int) ?? .null,
                 .date(Date()),
                 .int(agent.id)
             ])
@@ -181,8 +185,9 @@ struct AgentRepository {
             temperature: row.double(7),
             status: AgentStatus(rawValue: row.text(8)) ?? .disabled,
             kind: AgentKind(rawValue: row.text(9)) ?? .standard,
-            createdAt: row.date(10),
-            updatedAt: row.date(11)
+            templateID: row.optionalInt64(10),
+            createdAt: row.date(11),
+            updatedAt: row.date(12)
         )
     }
 

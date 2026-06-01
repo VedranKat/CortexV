@@ -21,6 +21,39 @@ enum AgentKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum AgentTemplatePropagationField: String, Codable, CaseIterable, Identifiable {
+    case baseURL
+    case apiKey
+    case defaultModel
+    case systemPrompt
+    case temperature
+    case kind
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .baseURL: "Base URL"
+        case .apiKey: "API Key"
+        case .defaultModel: "Default Model"
+        case .systemPrompt: "System Prompt"
+        case .temperature: "Temperature"
+        case .kind: "Kind"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .baseURL: "link"
+        case .apiKey: "key"
+        case .defaultModel: "cpu"
+        case .systemPrompt: "text.quote"
+        case .temperature: "thermometer.medium"
+        case .kind: "person.2"
+        }
+    }
+}
+
 enum AgentPromptDefaults {
     static let standard = "You are a helpful coding agent."
 
@@ -48,6 +81,24 @@ enum AgentPromptDefaults {
         case .orchestrator:
             return orchestrator
         }
+    }
+}
+
+struct AgentTemplate: Identifiable, Equatable {
+    var id: Int64
+    var name: String
+    var description: String
+    var baseURL: String
+    var apiKey: String
+    var defaultModel: String
+    var systemPrompt: String
+    var temperature: Double
+    var kind: AgentKind
+    var createdAt: Date
+    var updatedAt: Date
+
+    var hasAPIKey: Bool {
+        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -110,6 +161,7 @@ struct Agent: Identifiable, Equatable {
     var temperature: Double
     var status: AgentStatus
     var kind: AgentKind
+    var templateID: Int64? = nil
     var createdAt: Date
     var updatedAt: Date
 
