@@ -221,11 +221,17 @@ struct AgentsView: View {
             let count = linkedAgents(for: template.id).count
             Text("This detaches \(count) linked agent\(count == 1 ? "" : "s"). Copied provider settings and prompts stay on those agents.")
         }
-        .onAppear(perform: reconcileSelection)
+        .onAppear {
+            handlePendingCommand(appModel.pendingCommand)
+            reconcileSelection()
+        }
         .onChange(of: selectedGroup) { _, _ in reconcileSelection() }
         .onChange(of: route) { _, _ in reconcileSelection() }
         .onChange(of: appModel.agents) { _, _ in reconcileSelection() }
         .onChange(of: appModel.agentTemplates) { _, _ in reconcileSelection() }
+        .onChange(of: appModel.pendingCommand) { _, command in
+            handlePendingCommand(command)
+        }
     }
 
     private var templateDeleteBinding: Binding<Bool> {
@@ -295,6 +301,27 @@ struct AgentsView: View {
     private func returnToHub() {
         route = .hub
         appModel.selectedAgentID = nil
+    }
+
+    private func handlePendingCommand(_ command: AppCommand?) {
+        guard command == .openSelectedAgent else { return }
+        openSelectedAgentRoute()
+        appModel.consumePendingCommand(.openSelectedAgent)
+    }
+
+    private func openSelectedAgentRoute() {
+        guard let selectedAgent else { return }
+        let group: AgentGroupSelection
+        if let templateID = selectedAgent.templateID,
+           knownTemplateIDs.contains(templateID) {
+            group = .template(templateID)
+        } else {
+            group = .uncategorized
+        }
+        selectedGroup = group
+        route = .group(group)
+        agentSearchText = ""
+        filter = .all
     }
 
     private func editSelectedAgent() {

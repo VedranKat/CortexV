@@ -899,4 +899,5 @@ final class AppModel: ObservableObject {
 enum AppCommand: Equatable {
     case newSession
     case sendMessage
+    case openSelectedAgent
 }
