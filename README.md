@@ -2,9 +2,10 @@
 
 Native macOS SwiftUI app for Cortex V.
 
-Build the Swift package from the repository root:
+Build and launch the packaged macOS app from the repository root:
 
 ```sh
-swift build
-swift run CortexV
+bash Scripts/build-app.sh
+pkill -TERM -x CortexV || true
+open "dist/Cortex V.app"
 ```
